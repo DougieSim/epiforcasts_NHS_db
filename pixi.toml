@@ -10,6 +10,8 @@ platforms = ["win-64"]
 python = ">=3.10,<3.13"
 # Lets PyTensor compile C ops (much faster than pure Python). See docs/PYTENSOR_COMPILER.md
 cxx-compiler = "*"
+xarray = ">=2026.4.0,<2027"
+gxx = ">=15.2.0,<15.3"
 
 [pypi-dependencies]
 numpy = "*"
