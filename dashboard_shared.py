@@ -24,13 +24,9 @@ DEFAULT_RISK_MEDIUM_TIER_MIN_P_CONCERN = 0.30
 
 
 def pressure_index_samples(idata: az.InferenceData, icb_idx: int) -> np.ndarray:
-    """Extract flattened posterior samples of the pressure index for one ICB."""
-    post = idata.posterior
-    mu = post["mu_national"].values
-    eff = post["icb_effect"].values
-    sig = post["sigma_icb"].values
-    combined = mu + eff[..., icb_idx] * sig
-    return combined.astype(float).ravel()
+    post  = idata.posterior
+    level = post["level"].values   # (chains, draws, n_weeks, n_icb)
+    return level[:, :, -1, icb_idx].astype(float).ravel()
 
 
 def credible_triplet(samples: np.ndarray, mass: float) -> tuple[float, float, float]:

@@ -120,7 +120,7 @@ class CacheManager:
             logger.info(f"Warming cache from {self.posteriors_path}...")
             
             # Load posteriors
-            idata = az.from_netcdf(str(self.posteriors_path))
+            idata = az.from_netcdf(str(self.posteriors_path), engine="h5netcdf")
             
             # Extract ICB names and basic info
             icbs = idata.attrs.get("icbs", [])
@@ -201,7 +201,7 @@ class CacheManager:
             )
         
         logger.debug(f"Loading cached posteriors from {self.posteriors_path}")
-        return az.from_netcdf(str(self.posteriors_path))
+        return az.from_netcdf(str(self.posteriors_path), engine="h5netcdf")
     
     def load_summary_stats(self) -> dict:
         """Load pre-computed summary statistics."""
@@ -289,13 +289,8 @@ class CacheManager:
     
     @staticmethod
     def _extract_samples(idata: az.InferenceData, icb_idx: int) -> np.ndarray:
-        """Extract posterior samples for a given ICB index."""
-        post = idata.posterior
-        mu = post["mu_national"].values
-        eff = post["icb_effect"].values
-        sig = post["sigma_icb"].values
-        combined = mu + eff[..., icb_idx] * sig
-        return combined.astype(float).ravel()
+        level = idata.posterior["level"].values  # (chains, draws, n_weeks, n_icb)
+        return level[:, :, -1, icb_idx].astype(float).ravel()
     
     def _list_cached_samples(self) -> list[Path]:
         """List all cached sample files."""

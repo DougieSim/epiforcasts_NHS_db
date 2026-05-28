@@ -1,296 +1,243 @@
 """
-Background inference daemon.
+Offline inference daemon with automatic synthetic data generation.
 
-Continuously runs model fitting on a schedule and writes results to disk.
-The UI consumes these pre-computed posteriors without waiting.
+Every interval:
+  1. Generate a new synthetic week and append to the CSV
+  2. Re-fit the model on the full updated dataset
+  3. Save posteriors and warm the cache
+  4. Dashboard reads fresh results automatically
 
-Usage:
-    python inference_daemon.py [--interval 3600] [--data-path synthetic_nhs_pressure.csv]
+Usage
+-----
+Run once (useful for initial setup or testing):
+    python inference_daemon.py --once
 
-Environment:
-    INFERENCE_DAEMON_INTERVAL=7200  Set check interval in seconds (default: 3600 = 1 hour)
+Run on a schedule (production):
+    python inference_daemon.py --interval-hours 1
+
+Generate a week without running inference (debugging):
+    python inference_daemon.py --generate-only
+
+Fast sampling mode (development):
+    python inference_daemon.py --interval-hours 1 --fast
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
-# Configure logging
+from bayesian_pressure_model import fit_pressure_model
+from cache_manager import CacheManager
+from synthetic_data_generator import SyntheticGenerator
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("inference_daemon.log"),
-    ],
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
-
-def load_data(data_path: Path) -> pd.DataFrame:
-    """Load synthetic data, return None if missing."""
-    if not data_path.exists():
-        logger.warning(f"Data file not found: {data_path}")
-        return None
-    return pd.read_csv(data_path)
+DATA_PATH       = "synthetic_nhs_pressure.csv"
+POSTERIORS_PATH = "posteriors.nc"
+CACHE_DIR       = ".cache"
 
 
-def should_rerun_inference(
-    data_path: Path,
-    posterior_path: Path,
-    force: bool = False,
-) -> bool:
+# ─────────────────────────────────────────
+# Core pipeline steps
+# ─────────────────────────────────────────
+
+def step_generate(generator: SyntheticGenerator, df: pd.DataFrame) -> pd.DataFrame:
     """
-    Check if inference should be rerun.
-    
-    Returns True if:
-    - force=True, or
-    - posterior file missing, or
-    - data file is newer than posterior file
+    Generate one new synthetic week and append it to the CSV.
+    Returns the updated DataFrame.
     """
-    if force:
-        return True
-    
-    if not posterior_path.exists():
-        logger.info(f"Posterior file missing: {posterior_path}")
-        return True
-    
-    if not data_path.exists():
-        logger.warning(f"Data file missing: {data_path}")
-        return False
-    
-    data_mtime = data_path.stat().st_mtime
-    posterior_mtime = posterior_path.stat().st_mtime
-    
-    if data_mtime > posterior_mtime:
-        logger.info(f"Data updated; posterior is stale ({posterior_mtime} < {data_mtime})")
-        return True
-    
-    logger.debug(f"Posterior is current; skipping inference")
-    return False
+    logger.info("Generating new synthetic week...")
+    generator.fit(df)
+    new_week_df = generator.generate_next_week(df)
+    new_week    = int(new_week_df["week"].iloc[0])
+    logger.info(f"  Generated week {new_week} for "
+                f"{len(new_week_df[new_week_df['icb'] != 'England'])} ICBs")
+
+    updated = generator.append_and_save(new_week_df, df=df)
+    logger.info(f"  Dataset now covers weeks "
+                f"{updated['week'].min()}–{updated['week'].max()}")
+    return updated
 
 
-def run_inference_safe(
-    data_path: Path,
-    posterior_path: Path,
-    fast: bool = True,
-) -> bool:
+def step_inference(df: pd.DataFrame, fast: bool) -> bool:
     """
-    Safely run inference and save results.
-    
-    Returns True if successful, False otherwise.
+    Run MCMC inference on the full dataset and save posteriors.
+    Returns True on success.
     """
+    logger.info("Running inference...")
     try:
-        # Import here to avoid loading PyMC/PyTensor if not needed
-        import numpy as np
-        import pymc as pm
-        import arviz as az
-        
-        logger.info(f"Loading data from {data_path}…")
-        df = pd.read_csv(data_path)
-        logger.info(f"Loaded {len(df)} rows, {df['icb'].nunique()} ICBs")
-        
-        # Fit model
-        logger.info("Fitting Bayesian model…")
-        icb_codes = df["icb"].astype("category").cat.codes.values
-        beds = df["bed_occupancy"].values
-        
-        draws = 400 if fast else 1000
-        tune = 400 if fast else 1000
-        
-        with pm.Model() as model:
-            mu_national = pm.Normal("mu_national", 0, 1)
-            sigma_icb = pm.Exponential("sigma_icb", 1)
-            icb_effect = pm.Normal(
-                "icb_effect",
-                0,
-                1,
-                shape=len(np.unique(icb_codes)),
-            )
-            latent_pressure = mu_national + icb_effect[icb_codes] * sigma_icb
-            sigma_obs = pm.Exponential("sigma_obs", 5)
-            
-            pm.Normal(
-                "bed_obs",
-                mu=85 + latent_pressure * 6,
-                sigma=sigma_obs,
-                observed=beds,
-            )
-            
-            trace = pm.sample(
-                draws=draws,
-                tune=tune,
-                chains=1,
-                cores=1,
-                target_accept=0.9,
-                progressbar=False,
-                compute_convergence_checks=True,
-            )
-        
-        idata = az.from_pymc(trace)
-        idata.attrs = {
-            "n_obs": len(df),
-            "n_icbs": int(df["icb"].nunique()),
-            "icbs": list(df["icb"].unique()),
-            "timestamp": datetime.now().isoformat(),
-        }
-        
-        # Save
-        logger.info(f"Saving posterior to {posterior_path}…")
-        idata.to_netcdf(str(posterior_path))
-        logger.info(f"✓ Inference complete; {posterior_path.stat().st_size / (1024**2):.1f} MB")
-        
-        # Warm cache for instant UI access
-        logger.info("Warming cache for instant UI access…")
-        try:
-            from cache_manager import CacheManager
-            cache = CacheManager(posteriors_path=posterior_path)
-            if cache.warm_cache():
-                logger.info("✓ Cache warmed successfully")
-            else:
-                logger.warning("⚠ Cache warming failed")
-        except Exception as e:
-            logger.warning(f"Could not warm cache: {e}")
-        
+        model, idata, train, test, enc = fit_pressure_model(df, fast=fast)
+        logger.info("Inference complete.")
         return True
-    
-    except Exception as e:
-        logger.error(f"Inference failed: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Inference failed")
         return False
 
 
-def daemon_loop(
-    data_path: Path = Path("synthetic_nhs_pressure.csv"),
-    posterior_path: Path = Path("posteriors.nc"),
-    interval_seconds: int = 3600,
-    fast: bool = True,
-):
-    """
-    Run continuous inference loop.
-    
-    Checks every `interval_seconds` if data is newer than posterior;
-    if so, reruns inference in the background.
-    """
-    logger.info(f"Starting inference daemon (interval={interval_seconds}s, fast={fast})")
-    logger.info(f"Data: {data_path.absolute()}")
-    logger.info(f"Posteriors: {posterior_path.absolute()}")
-    
-    iteration = 0
-    last_success = None
-    
-    try:
-        while True:
-            iteration += 1
-            now = datetime.now()
-            logger.info(f"\n--- Iteration {iteration} @ {now.strftime('%Y-%m-%d %H:%M:%S')} ---")
-            
-            try:
-                if should_rerun_inference(data_path, posterior_path, force=False):
-                    logger.info("Running inference…")
-                    success = run_inference_safe(data_path, posterior_path, fast=fast)
-                    if success:
-                        last_success = now
-                        logger.info(f"Success! Last successful inference: {last_success}")
-                    else:
-                        logger.error("Inference failed")
-                else:
-                    logger.info("No update needed")
-            
-            except KeyboardInterrupt:
-                logger.info("KeyboardInterrupt; shutting down gracefully")
-                break
-            except Exception as e:
-                logger.error(f"Unexpected error in loop iteration: {e}", exc_info=True)
-            
-            # Sleep until next check
-            logger.info(f"Sleeping for {interval_seconds}s until next check…")
-            time.sleep(interval_seconds)
-    
-    except KeyboardInterrupt:
-        logger.info("Daemon stopped by user")
-    finally:
-        logger.info(f"Daemon exiting. Last successful inference: {last_success}")
+def step_warm_cache() -> bool:
+    """Warm the summary stats cache from the saved posteriors."""
+    logger.info("Warming cache...")
+    cache = CacheManager(posteriors_path=POSTERIORS_PATH, cache_dir=CACHE_DIR)
+    success = cache.warm_cache()
+    if success:
+        logger.info("Cache ready — dashboard will show updated pressures.")
+    else:
+        logger.error("Cache warming failed.")
+    return success
 
 
-def main():
+# ─────────────────────────────────────────
+# Full run
+# ─────────────────────────────────────────
+
+def run_cycle(
+    generator: SyntheticGenerator,
+    *,
+    fast: bool,
+    generate: bool = True,
+) -> bool:
+    """
+    Execute one full generate → infer → cache cycle.
+
+    Parameters
+    ----------
+    generator   : SyntheticGenerator bound to the data CSV
+    fast        : use fewer MCMC draws (development mode)
+    generate    : if False, skip data generation (inference only)
+
+    Returns True if all steps succeeded.
+    """
+    cycle_start = time.time()
+    logger.info("─" * 60)
+    logger.info(f"Starting cycle at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    df = pd.read_csv(DATA_PATH)
+    logger.info(f"Loaded {len(df)} rows "
+                f"(weeks {df['week'].min()}–{df['week'].max()})")
+
+    if generate:
+        df = step_generate(generator, df)
+
+    ok = step_inference(df, fast=fast)
+    if not ok:
+        logger.error("Cycle aborted — inference failed.")
+        return False
+
+    ok = step_warm_cache()
+    elapsed = time.time() - cycle_start
+    logger.info(f"Cycle complete in {elapsed:.1f}s")
+    logger.info("─" * 60)
+    return ok
+
+
+# ─────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────
+
+def main() -> int:
+    global DATA_PATH
+
     parser = argparse.ArgumentParser(
-        description="Background daemon for continuous model inference.",
+        description="NHS pressure model inference daemon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-Examples:
-  # Check every hour (default)
-  python inference_daemon.py
-
-  # Check every 30 minutes
-  python inference_daemon.py --interval 1800
-
-  # Use full sampling
-  python inference_daemon.py --full
-
-  # Exit after first run (useful for CI/scheduled jobs)
-  python inference_daemon.py --once
-        """,
-    )
-    parser.add_argument(
-        "--data-path",
-        type=Path,
-        default=Path("synthetic_nhs_pressure.csv"),
-        help="Path to input CSV data.",
-    )
-    parser.add_argument(
-        "--posterior-path",
-        type=Path,
-        default=Path("posteriors.nc"),
-        help="Path to output NetCDF file.",
-    )
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=int(os.environ.get("INFERENCE_DAEMON_INTERVAL", 3600)),
-        help="Check interval in seconds (default: 3600).",
-    )
-    parser.add_argument(
-        "--fast",
-        action="store_true",
-        default=True,
-        help="Use reduced sampling (400 draws). Default behavior.",
-    )
-    parser.add_argument(
-        "--full",
-        action="store_true",
-        help="Use full sampling (1000 draws, 1000 tune).",
+        epilog=__doc__,
     )
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Run once and exit (useful for scheduled jobs).",
+        help="Generate one week, run inference, warm cache, then exit.",
     )
-
+    parser.add_argument(
+        "--generate-only",
+        action="store_true",
+        help="Generate one new synthetic week and exit (no inference).",
+    )
+    parser.add_argument(
+        "--infer-only",
+        action="store_true",
+        help="Run inference on current data without generating a new week.",
+    )
+    parser.add_argument(
+        "--interval-hours",
+        type=float,
+        default=1.0,
+        help="Hours between cycles when running continuously (default: 1).",
+    )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Use fewer MCMC draws (development/testing only).",
+    )
+    parser.add_argument(
+        "--data",
+        type=str,
+        default=DATA_PATH,
+        help=f"Path to weekly CSV (default: {DATA_PATH}).",
+    )
     args = parser.parse_args()
-    fast = not args.full
+
+    DATA_PATH = args.data
+
+    generator = SyntheticGenerator(DATA_PATH)
+
+    # ── Single-shot modes ─────────────────────────────────────────────
+
+    if args.generate_only:
+        df      = pd.read_csv(DATA_PATH)
+        updated = step_generate(generator, df)
+        logger.info(f"Generated week {updated['week'].max()}. Done.")
+        return 0
+
+    if args.infer_only:
+        df = pd.read_csv(DATA_PATH)
+        ok = step_inference(df, fast=args.fast)
+        if ok:
+            step_warm_cache()
+        return 0 if ok else 1
 
     if args.once:
-        # Single run mode (for CI/cron)
-        logger.info("Running inference once…")
-        success = run_inference_safe(args.data_path, args.posterior_path, fast=fast)
-        sys.exit(0 if success else 1)
-    else:
-        # Daemon mode (continuous)
-        daemon_loop(
-            data_path=args.data_path,
-            posterior_path=args.posterior_path,
-            interval_seconds=args.interval,
-            fast=fast,
-        )
+        ok = run_cycle(generator, fast=args.fast, generate=True)
+        return 0 if ok else 1
+
+    # ── Continuous loop ───────────────────────────────────────────────
+
+    interval_s = args.interval_hours * 3600
+    logger.info(
+        f"Running continuously every {args.interval_hours}h. "
+        "Ctrl+C to stop."
+    )
+
+    while True:
+        ok = run_cycle(generator, fast=args.fast, generate=True)
+
+        if not ok:
+            logger.warning("Cycle failed — will retry next interval.")
+
+        next_run = time.time() + interval_s
+        next_str = datetime.fromtimestamp(next_run).strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"Next cycle at {next_str}")
+
+        try:
+            time.sleep(interval_s)
+        except KeyboardInterrupt:
+            logger.info("Shutting down.")
+            break
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
