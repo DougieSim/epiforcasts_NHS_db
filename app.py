@@ -33,8 +33,6 @@ from plots import (
     fig_pressure_trajectory,
     fig_seasonal_effects,
     fig_clinical_summary,
-    fig_time_to_threshold_detail,
-    fig_time_to_threshold_all_icbs,
 )
 from dashboard_shared import time_to_threshold as _time_to_threshold
 
@@ -481,62 +479,61 @@ with _main_area.container():
     st.markdown("---")
     st.markdown("### Time to Threshold")
     st.caption(
-        "Probabilistic early warning: how many weeks until total pressure (latent level + season) "
-        "first exceeds the concern or elevated reference? "
-        "Based on rolling the fitted AR(1) forward from the current posterior."
+        "Estimated weeks until total pressure first crosses each reference level. "
+        "Median of the posterior first-passage-time distribution (12-week horizon). "
+        ">12w = fewer than 5% of samples cross within 12 weeks. "
+        "Now = threshold already exceeded. "
+        "_Assumptions: AR(1) rolled forward from current posterior; rho and sigma\\_drift "
+        "drawn per sample; seasonal effects fixed at posterior estimates; "
+        "future seasons from calendar dates; observation noise excluded._"
     )
 
     _last_week = int(_all_icb_df["week"].max())
     _horizon   = 12
+    _rng       = np.random.default_rng(42)
+
+    def _fmt_weeks(ttt: dict) -> str:
+        if ttt["p_cross"] < 0.05:
+            return f">{ttt['horizon_weeks']}w"
+        if ttt["median_weeks"] is not None and ttt["median_weeks"] <= 0:
+            return "Now"
+        return f"~{int(round(ttt['median_weeks']))}w" if ttt["median_weeks"] else "—"
 
     if selected_geo == "England":
-        # Show all ICBs for both thresholds
-        for _thresh, _tlabel in [
-            (THRESHOLD_CONCERN,  "Concern"),
-            (THRESHOLD_ELEVATED, "Elevated"),
-        ]:
-            ttt_fig = fig_time_to_threshold_all_icbs(
-                idata, _last_week, _thresh, _tlabel,
-                horizon_weeks=_horizon, icb_filter=None,
-            )
-            st.pyplot(ttt_fig, clear_figure=True)
-            plt.close(ttt_fig)
-
+        _icbs_list = [str(n) for n in icbs_in_posterior]
+        # Render in rows of 4
+        _cols_per_row = 4
+        for _row_start in range(0, len(_icbs_list), _cols_per_row):
+            _row_icbs = _icbs_list[_row_start : _row_start + _cols_per_row]
+            _cols = st.columns(len(_row_icbs))
+            for _col, _icb_name in zip(_cols, _row_icbs):
+                _idx = _icbs_list.index(_icb_name)
+                _ttt_c = _time_to_threshold(
+                    idata, _idx, _last_week, THRESHOLD_CONCERN, _horizon, rng=_rng,
+                )
+                _ttt_e = _time_to_threshold(
+                    idata, _idx, _last_week, THRESHOLD_ELEVATED, _horizon, rng=_rng,
+                )
+                _short = _icb_name.replace("NHS ", "").replace(" ICB", "")
+                with _col:
+                    st.markdown(f"**{_short}**")
+                    st.metric("Weeks to Concern",  _fmt_weeks(_ttt_c))
+                    st.metric("Weeks to Elevated", _fmt_weeks(_ttt_e))
     else:
-        # Detailed PMF for the selected ICB only
         _icb_idx_ttt = resolve_icb_index(idata, selected_geo)
-        _rng         = np.random.default_rng(42)
-        ttt_concern  = _time_to_threshold(
-            idata, _icb_idx_ttt, _last_week,
-            THRESHOLD_CONCERN,  _horizon, rng=_rng,
+        _ttt_c = _time_to_threshold(
+            idata, _icb_idx_ttt, _last_week, THRESHOLD_CONCERN,  _horizon, rng=_rng,
         )
-        _rng         = np.random.default_rng(42)
-        ttt_elevated = _time_to_threshold(
-            idata, _icb_idx_ttt, _last_week,
-            THRESHOLD_ELEVATED, _horizon, rng=_rng,
+        _ttt_e = _time_to_threshold(
+            idata, _icb_idx_ttt, _last_week, THRESHOLD_ELEVATED, _horizon, rng=_rng,
         )
-        detail_fig = fig_time_to_threshold_detail(
-            ttt_concern, ttt_elevated, selected_geo,
-        )
-        st.pyplot(detail_fig, clear_figure=True)
-        plt.close(detail_fig)
-
-        # Also show the cross-ICB comparison for context, highlighted to this ICB
-        st.markdown("#### How this ICB compares nationally")
-        st.caption(
-            "Same 12-week horizon, all ICBs shown. "
-            "Helps place the selected ICB's risk in the national context."
-        )
-        for _thresh, _tlabel in [
-            (THRESHOLD_CONCERN,  "Concern"),
-            (THRESHOLD_ELEVATED, "Elevated"),
-        ]:
-            ttt_ctx = fig_time_to_threshold_all_icbs(
-                idata, _last_week, _thresh, _tlabel,
-                horizon_weeks=_horizon, icb_filter=None,
-            )
-            st.pyplot(ttt_ctx, clear_figure=True)
-            plt.close(ttt_ctx)
+        _mc1, _mc2 = st.columns(2)
+        with _mc1:
+            st.metric("Weeks to Concern",  _fmt_weeks(_ttt_c),
+                      help=f"P(crossing within {_horizon}w) = {_ttt_c['p_cross']:.0%}")
+        with _mc2:
+            st.metric("Weeks to Elevated", _fmt_weeks(_ttt_e),
+                      help=f"P(crossing within {_horizon}w) = {_ttt_e['p_cross']:.0%}")
 
 # ─────────────────────────────────────────
 # Auto-rerun polling loop
