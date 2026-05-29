@@ -8,8 +8,21 @@ current underlying pressure; total pressure adds the current season's effect.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import numpy as np
 import arviz as az
+
+# Week 0 anchor — must match generate_synthetic_data.py and synthetic_data_generator.py
+_START_DATE = date(2023, 1, 2)
+
+# Month → season index (0=Winter, 1=Spring, 2=Summer, 3=Autumn)
+_MONTH_TO_SEASON: dict[int, int] = {
+    12: 0, 1: 0, 2: 0,
+     3: 1, 4: 1, 5: 1,
+     6: 2, 7: 2, 8: 2,
+     9: 3, 10: 3, 11: 3,
+}
 
 
 # ─────────────────────────────────────────
@@ -133,3 +146,122 @@ def credible_triplet(
         )
     ]
     return lo, mid, hi
+
+
+def time_to_threshold(
+    idata: az.InferenceData,
+    icb_idx: int,
+    last_week: int,
+    threshold: float,
+    horizon_weeks: int = 12,
+    rng: np.random.Generator | None = None,
+) -> dict:
+    """
+    Posterior distribution of first-passage time over a pressure threshold.
+
+    Starting from the current posterior for level[icb, T], the AR(1) is
+    rolled forward week-by-week.  The season effect for each future week is
+    determined by the calendar date implied by last_week + t using the same
+    START_DATE and MONTH_TO_SEASON mapping used during model fitting.
+
+    Parameters
+    ----------
+    idata         : InferenceData from fit_pressure_model
+    icb_idx       : index of the target ICB in the posterior
+    last_week     : the week number of the most recent training observation
+    threshold     : latent-scale threshold (e.g. THRESHOLD_CONCERN = 0.5)
+    horizon_weeks : how many weeks ahead to simulate (default 12)
+    rng           : optional random Generator for reproducibility
+
+    Returns
+    -------
+    dict with keys:
+        crossing_week   : (n_samples,) — first week index (1-based) at which
+                          total pressure exceeds the threshold, or np.nan if it
+                          never crosses within the horizon.
+        p_cross         : float — fraction of samples that cross.
+        median_weeks    : float | None — median crossing week among crossing
+                          samples; None if p_cross == 0.
+        p10_weeks       : float | None — 10th-percentile crossing week (early risk)
+        p90_weeks       : float | None — 90th-percentile crossing week (late risk)
+        horizon_weeks   : int — the horizon used
+        threshold       : float — the threshold used
+
+    Assumptions
+    -----------
+    - AR(1) dynamics: level[t+1] = rho * level[t] + N(0, sigma_drift)
+      The posterior mean of rho and sigma_drift are drawn per-sample.
+    - No mean reversion intercept — the model is zero-mean, so unobserved
+      structural drift is not captured; the forecast is conditional on the
+      current regime continuing.
+    - Seasonal effects are drawn from the posterior and held fixed across the
+      forecast horizon (seasonal pattern is assumed stable).
+    - Future seasons are determined by calendar month derived from
+      START_DATE + timedelta(weeks = last_week + t), matching the encoding
+      used at training time.
+    - Total pressure = AR(1) level + season_effect.  Observation noise
+      (sigma_obs) is intentionally excluded — we are forecasting the latent
+      level, not a single noisy observation.
+    - If the threshold is already exceeded at t=0 (current week), crossing
+      week is recorded as 0.
+    """
+    if rng is None:
+        rng = np.random.default_rng(42)
+
+    post = idata.posterior
+
+    # Flatten chains × draws → (n_samples,)
+    level_f     = post["level"].values.reshape(-1, post["level"].shape[2], post["level"].shape[3])
+    season_f    = post["season_effects"].values.reshape(-1, 4)
+    rho_f       = post["rho"].values.ravel()
+    sigma_f     = post["sigma_drift"].values.ravel()
+    n_samples   = level_f.shape[0]
+
+    current_level = level_f[:, -1, icb_idx]   # (n_samples,)
+
+    # Pre-compute season index for each future step (same for all samples)
+    future_season_idx = np.array([
+        _MONTH_TO_SEASON[(_START_DATE + timedelta(weeks=int(last_week + t + 1))).month]
+        for t in range(horizon_weeks)
+    ])  # (horizon_weeks,)
+
+    # Simulate forward — vectorised across samples
+    crossing_week = np.full(n_samples, np.nan)
+    level_now = current_level.copy()
+
+    # Check t=0 (current state already over threshold)
+    season_now_idx = _MONTH_TO_SEASON[(_START_DATE + timedelta(weeks=int(last_week))).month]
+    total_now = level_now + season_f[:, season_now_idx]
+    already_crossed = total_now > threshold
+    crossing_week[already_crossed] = 0
+
+    active = ~already_crossed  # samples still searching
+
+    for t in range(horizon_weeks):
+        if not active.any():
+            break
+        innov      = rng.normal(0.0, sigma_f[active], size=int(active.sum()))
+        level_now[active] = rho_f[active] * level_now[active] + innov
+        total      = level_now[active] + season_f[active, future_season_idx[t]]
+        crossed    = total > threshold
+        # Map back to global sample indices
+        active_indices = np.where(active)[0]
+        newly_crossed  = active_indices[crossed]
+        crossing_week[newly_crossed] = t + 1
+        active[newly_crossed] = False
+
+    crossings   = crossing_week[~np.isnan(crossing_week)]
+    p_cross     = float(len(crossings) / n_samples)
+    median_wks  = float(np.median(crossings)) if len(crossings) > 0 else None
+    p10_wks     = float(np.percentile(crossings, 10)) if len(crossings) > 0 else None
+    p90_wks     = float(np.percentile(crossings, 90)) if len(crossings) > 0 else None
+
+    return dict(
+        crossing_week=crossing_week,
+        p_cross=p_cross,
+        median_weeks=median_wks,
+        p10_weeks=p10_wks,
+        p90_weeks=p90_wks,
+        horizon_weeks=horizon_weeks,
+        threshold=threshold,
+    )

@@ -33,7 +33,10 @@ from plots import (
     fig_pressure_trajectory,
     fig_seasonal_effects,
     fig_clinical_summary,
+    fig_time_to_threshold_detail,
+    fig_time_to_threshold_all_icbs,
 )
+from dashboard_shared import time_to_threshold as _time_to_threshold
 
 WEEKLY_CSV    = "synthetic_nhs_pressure.csv"
 POSTERIORS_NC = "posteriors.nc"
@@ -470,6 +473,70 @@ with _main_area.container():
         season_now_str=season_now_str,
         pe_hi=pe_hi, pc_hi=pc_hi, pe_med=pe_med, pc_med=pc_med,
     )
+
+    # ─────────────────────────────────────────
+    # Time-to-threshold section
+    # ─────────────────────────────────────────
+
+    st.markdown("---")
+    st.markdown("### Time to Threshold")
+    st.caption(
+        "Probabilistic early warning: how many weeks until total pressure (latent level + season) "
+        "first exceeds the concern or elevated reference? "
+        "Based on rolling the fitted AR(1) forward from the current posterior."
+    )
+
+    _last_week = int(_all_icb_df["week"].max())
+    _horizon   = 12
+
+    if selected_geo == "England":
+        # Show all ICBs for both thresholds
+        for _thresh, _tlabel in [
+            (THRESHOLD_CONCERN,  "Concern"),
+            (THRESHOLD_ELEVATED, "Elevated"),
+        ]:
+            ttt_fig = fig_time_to_threshold_all_icbs(
+                idata, _last_week, _thresh, _tlabel,
+                horizon_weeks=_horizon, icb_filter=None,
+            )
+            st.pyplot(ttt_fig, clear_figure=True)
+            plt.close(ttt_fig)
+
+    else:
+        # Detailed PMF for the selected ICB only
+        _icb_idx_ttt = resolve_icb_index(idata, selected_geo)
+        _rng         = np.random.default_rng(42)
+        ttt_concern  = _time_to_threshold(
+            idata, _icb_idx_ttt, _last_week,
+            THRESHOLD_CONCERN,  _horizon, rng=_rng,
+        )
+        _rng         = np.random.default_rng(42)
+        ttt_elevated = _time_to_threshold(
+            idata, _icb_idx_ttt, _last_week,
+            THRESHOLD_ELEVATED, _horizon, rng=_rng,
+        )
+        detail_fig = fig_time_to_threshold_detail(
+            ttt_concern, ttt_elevated, selected_geo,
+        )
+        st.pyplot(detail_fig, clear_figure=True)
+        plt.close(detail_fig)
+
+        # Also show the cross-ICB comparison for context, highlighted to this ICB
+        st.markdown("#### How this ICB compares nationally")
+        st.caption(
+            "Same 12-week horizon, all ICBs shown. "
+            "Helps place the selected ICB's risk in the national context."
+        )
+        for _thresh, _tlabel in [
+            (THRESHOLD_CONCERN,  "Concern"),
+            (THRESHOLD_ELEVATED, "Elevated"),
+        ]:
+            ttt_ctx = fig_time_to_threshold_all_icbs(
+                idata, _last_week, _thresh, _tlabel,
+                horizon_weeks=_horizon, icb_filter=None,
+            )
+            st.pyplot(ttt_ctx, clear_figure=True)
+            plt.close(ttt_ctx)
 
 # ─────────────────────────────────────────
 # Auto-rerun polling loop
