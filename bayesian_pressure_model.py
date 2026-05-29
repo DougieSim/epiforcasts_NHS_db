@@ -1,19 +1,23 @@
 """
-Bayesian NHS system pressure model — local level (dynamic linear model).
+Bayesian NHS system pressure model — AR(1) with seasonal decomposition.
 
-Each ICB has a latent pressure level that evolves as a random walk:
-
+Model structure:
     level[icb, 0]   ~ Normal(mu_national, sigma_icb)
-    level[icb, t]   = level[icb, t-1] + N(0, sigma_drift)
-    bed_obs[i]      ~ Normal(85 + level[icb, week_i] * 6, sigma_obs)
+    level[icb, t]   = rho * level[icb, t-1] + N(0, sigma_drift)
+    season_effects  = [winter, spring, summer, autumn]  sum-to-zero
+    bed_obs[i]      ~ Normal(85 + (level[icb, week] + season[week]) * 6, sigma_obs)
 
-This answers three clinical questions the static model cannot:
-  1. What is pressure RIGHT NOW (not the historical average)?
-  2. Is pressure rising or falling?
-  3. Which weeks were anomalous?
+The AR(1) level captures each ICB's underlying pressure trajectory.
+The seasonal component captures shared winter/spring/summer/autumn patterns.
+rho controls persistence — Beta(2,2) prior lets the data determine how
+mean-reverting vs random-walk the dynamics are.
 
-The dashboard reads level[icb, T] — the final week's posterior — as the
-current pressure index, directly compatible with dashboard_shared.py.
+Clinical outputs
+----------------
+level[icb, T]                     — current underlying pressure (ex-seasonal)
+level[icb, T] - level[icb, T-k]  — direction of travel
+season_effects                    — shared seasonal pattern across all ICBs
+P(level[icb,T] + season[T] > threshold)  — probability of elevated pressure
 """
 
 from __future__ import annotations
@@ -24,66 +28,132 @@ import pytensor.tensor as pt
 import pymc as pm
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import arviz as az
+
+from plots import (
+    plot_prior_predictive,
+    plot_posterior_predictive,
+    plot_residuals,
+    plot_seasonal_effects,
+    plot_pressure_trajectories,
+    plot_direction_of_travel,
+    plot_clinical_summary,
+)
 
 _FAST = os.environ.get("PRESSURE_MODEL_FAST", "1").strip().lower() not in (
     "0", "false", "no",
 )
 
 rng = np.random.default_rng(42)
-HOLDOUT_WEEKS = 12
+
+SEASON_NAMES = ["Winter", "Spring", "Summer", "Autumn"]
 
 
 # ─────────────────────────────────────────
 # Data
 # ─────────────────────────────────────────
 
-def prepare_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Remove England aggregate and split train / holdout."""
-    df = df[df["icb"] != "England"].copy()
-    cutoff = df["week"].max() - HOLDOUT_WEEKS + 1
-    train = df[df["week"] < cutoff].copy()
-    test  = df[df["week"] >= cutoff].copy()
-    return train, test
+def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove England aggregate. Use all data — no holdout for monitoring."""
+    return df[df["icb"] != "England"].copy()
 
 
-def encode(train: pd.DataFrame, test: pd.DataFrame) -> dict:
+# Month → season mapping: Dec/Jan/Feb=Winter, Mar/Apr/May=Spring,
+# Jun/Jul/Aug=Summer, Sep/Oct/Nov=Autumn
+MONTH_TO_SEASON: dict[int, int] = {
+    12: 0, 1: 0, 2: 0,   # Winter
+     3: 1, 4: 1, 5: 1,   # Spring
+     6: 2, 7: 2, 8: 2,   # Summer
+     9: 3, 10: 3, 11: 3, # Autumn
+}
+
+
+def encode(df: pd.DataFrame) -> dict:
     """
-    Encode training and test data into model-ready arrays.
+    Encode all data into model-ready arrays.
+
+    Season is derived from the calendar month in the `month` column
+    (added by the data generator). This ensures winter always maps to
+    Dec/Jan/Feb regardless of which week the dataset starts on.
 
     Returns a dict containing:
-      icb_codes   — integer ICB index per training observation
-      week_idx    — 0-based week index per training observation
-      beds        — observed bed occupancy per training observation
-      n_icb       — number of ICBs
-      n_weeks     — number of training weeks
-      categories  — ordered ICB names (index matches icb_codes)
-      test_*      — equivalent arrays for holdout evaluation
+      icb_codes  — integer ICB index per observation  (n_obs,)
+      week_idx   — 0-based week index per observation  (n_obs,)
+      season_idx — season 0..3 per observation  (n_obs,)
+                   0=Winter, 1=Spring, 2=Summer, 3=Autumn
+      beds       — observed bed occupancy  (n_obs,)
+      n_icb      — number of ICBs
+      n_weeks    — number of weeks
+      categories — ordered ICB names
     """
-    cat        = train["icb"].astype("category")
+    cat        = df["icb"].astype("category")
     categories = cat.cat.categories
     icb_codes  = cat.cat.codes.values
-    week_idx   = (train["week"].values - train["week"].min()).astype(int)
-    beds       = train["bed_occupancy"].values
+    week_idx   = (df["week"].values - df["week"].min()).astype(int)
+    beds       = df["bed_occupancy"].values
     n_icb      = len(categories)
     n_weeks    = int(week_idx.max()) + 1
 
-    test_icb_codes = pd.Categorical(test["icb"], categories=categories).codes
-    test_week_idx  = (test["week"].values - train["week"].min()).astype(int)
-    test_beds      = test["bed_occupancy"].values
+    from datetime import date as _date, timedelta as _td
+    _START_DATE = _date(2023, 1, 2)
+
+    if "month" in df.columns:
+        month_vals = df["month"].values
+    else:
+        month_vals = np.full(len(df), np.nan)
+
+    # Resolve NaN months: try week_date first, then derive from week number.
+    month_resolved = []
+    week_vals = df["week"].values
+    week_date_col = df["week_date"] if "week_date" in df.columns else None
+    for i, m in enumerate(month_vals):
+        if not (m != m):  # fast NaN check without pandas
+            month_resolved.append(int(m))
+        elif week_date_col is not None and pd.notna(week_date_col.iloc[i]):
+            try:
+                month_resolved.append(
+                    pd.to_datetime(week_date_col.iloc[i]).month
+                )
+            except Exception:
+                month_resolved.append(
+                    (_START_DATE + _td(weeks=int(week_vals[i]))).month
+                )
+        else:
+            month_resolved.append(
+                (_START_DATE + _td(weeks=int(week_vals[i]))).month
+            )
+
+    season_idx = np.array([MONTH_TO_SEASON[m] for m in month_resolved])
 
     return dict(
         icb_codes=icb_codes,
         week_idx=week_idx,
+        season_idx=season_idx,
         beds=beds,
         n_icb=n_icb,
         n_weeks=n_weeks,
         categories=categories,
-        test_icb_codes=test_icb_codes,
-        test_week_idx=test_week_idx,
-        test_beds=test_beds,
     )
+
+
+def check_season_alignment(enc: dict, df: pd.DataFrame) -> None:
+    """
+    Print the season and date for the first 8 weeks as a sanity check.
+    Season is derived from calendar month so no offset adjustment needed.
+    """
+    min_week   = df["week"].min()
+    week_idx   = enc["week_idx"]
+    season_idx = enc["season_idx"]
+    has_date   = "week_date" in df.columns
+
+    print("Season alignment check (first 8 weeks):")
+    for w in range(min(8, enc["n_weeks"])):
+        mask = np.where(week_idx == w)[0]
+        if len(mask) == 0:
+            continue
+        s        = int(season_idx[mask[0]])
+        date_str = f"  ({df['week_date'].values[mask[0]]})" if has_date else ""
+        print(f"  Week {min_week + w}{date_str}: {SEASON_NAMES[s]}")
 
 
 # ─────────────────────────────────────────
@@ -92,43 +162,55 @@ def encode(train: pd.DataFrame, test: pd.DataFrame) -> dict:
 
 def build_model(enc: dict) -> pm.Model:
     """
-    Local level (dynamic linear) model.
+    AR(1) local level model with shared four-season component.
 
-    Each ICB has a latent pressure level that drifts week-by-week as a
-    random walk. The national mean and cross-ICB variance anchor the
-    initial levels; sigma_drift controls how quickly pressure can change.
+    Variables
+    ---------
+    mu_national    ~ Normal(0, 1)
+        National average pressure on latent scale. At 0 → 85% occupancy.
 
-    Priors
-    ------
-    mu_national ~ Normal(0, 1)
-        National average pressure on the latent scale.
-        Maps to ~85% bed occupancy at mu=0, ±6% per unit.
+    sigma_icb      ~ Exponential(1)
+        Cross-ICB spread at initialisation.
 
-    sigma_icb ~ Exponential(1)
-        Cross-ICB spread at initialisation. Controls how different
-        ICBs are allowed to be at baseline.
+    rho            ~ Beta(2, 2)
+        AR(1) persistence. rho=1 is pure random walk; rho=0 is white noise.
+        Beta(2,2) is symmetric around 0.5; data determines the value.
 
-    sigma_drift ~ Exponential(10)  [mean 0.1]
-        Week-to-week drift in each ICB's pressure level.
-        Small values = slow-moving pressure (requires sustained evidence
-        to shift the estimate). This is the key clinical prior —
-        tight enough that single noisy weeks don't trigger false alarms,
-        but loose enough to track genuine sustained changes.
+    level_init     ~ Normal(mu_national, sigma_icb)  shape=(n_icb,)
+        Starting pressure level for each ICB at week 0.
 
-    sigma_obs ~ Exponential(5)  [mean 0.2]
-        Observation noise on the bed occupancy measurement.
+    sigma_drift    ~ Exponential(lam=10)  [mean 0.1]
+        Week-to-week innovation noise on the AR(1) level.
+        0.1 latent ≈ 0.6% occupancy per week.
 
-    Clinical outputs
-    ----------------
-    level[icb, T]           — current pressure posterior (dashboard)
-    level[icb, T] - level[icb, T-k]  — direction of travel over k weeks
-    P(level[icb,T] > threshold)       — probability of elevated pressure
+    innovations    ~ Normal(0, sigma_drift)  shape=(n_weeks-1, n_icb)
+        Random shocks driving the AR(1) level at each step.
+
+    level          Deterministic  shape=(n_weeks, n_icb)
+        Full AR(1) trajectory: level[t] = rho * level[t-1] + innovations[t].
+
+    sigma_season   ~ Exponential(lam=5)  [mean 0.2]
+        Scale of seasonal effects. 0.2 latent ≈ 1.2% occupancy swing.
+
+    season_raw     ~ Normal(0, sigma_season)  shape=(3,)
+        Free seasonal effects for winter, spring, summer.
+
+    season_effects  Deterministic  shape=(4,)
+        [winter, spring, summer, autumn] with sum-to-zero constraint.
+        autumn = -(winter + spring + summer).
+
+    sigma_obs      ~ Exponential(lam=5)  [mean 0.2]
+        Observation noise — measurement error and reporting noise.
+
+    bed_obs        ~ Normal(85 + (level[week, icb] + season[week]) * 6, sigma_obs)
+        Likelihood. Fixed to observed data; drives the posterior.
     """
-    icb_codes = enc["icb_codes"]
-    week_idx  = enc["week_idx"]
-    beds      = enc["beds"]
-    n_icb     = enc["n_icb"]
-    n_weeks   = enc["n_weeks"]
+    icb_codes  = enc["icb_codes"]
+    week_idx   = enc["week_idx"]
+    season_idx = enc["season_idx"]
+    beds       = enc["beds"]
+    n_icb      = enc["n_icb"]
+    n_weeks    = enc["n_weeks"]
 
     with pm.Model() as model:
 
@@ -136,9 +218,10 @@ def build_model(enc: dict) -> pm.Model:
         mu_national = pm.Normal("mu_national", 0, 1)
         sigma_icb   = pm.Exponential("sigma_icb", 1)
 
+        # ── AR(1) persistence ─────────────────────────────────────────
+        rho = pm.Beta("rho", alpha=2, beta=2)
+
         # ── Initial pressure level per ICB ────────────────────────────
-        # Each ICB starts at mu_national ± sigma_icb, allowing for
-        # persistent structural differences between areas.
         level_init = pm.Normal(
             "level_init",
             mu=mu_national,
@@ -146,13 +229,9 @@ def build_model(enc: dict) -> pm.Model:
             shape=n_icb,
         )
 
-        # ── Week-to-week drift ────────────────────────────────────────
-        # Tight prior: pressure can shift ~0.6% occupancy per week
-        # on average (0.1 latent * 6). Sustained pressure over multiple
-        # weeks compounds to meaningful signals.
-        sigma_drift = pm.Exponential("sigma_drift", lam=10)
+        # ── Week-to-week AR(1) innovations ────────────────────────────
+        sigma_drift = pm.Exponential("sigma_drift", lam=1)
 
-        # innovations: shape (n_weeks - 1, n_icb)
         innovations = pm.Normal(
             "innovations",
             0,
@@ -160,33 +239,55 @@ def build_model(enc: dict) -> pm.Model:
             shape=(n_weeks - 1, n_icb),
         )
 
-        # Build level via scan: level[t] = level[t-1] + innovation[t]
-        # This is a pure random walk — no mean reversion.
-        # Mean reversion would be appropriate if we believed pressure
-        # always returns to a fixed baseline, but NHS pressure can
-        # shift structurally (e.g. winter, staffing crises).
-        levels_rest, _ = pytensor.scan(
-            fn=lambda innov, prev: prev + innov,
-            sequences=innovations,           # (n_weeks-1, n_icb)
-            outputs_info=level_init,         # (n_icb,)
+        # AR(1) scan: level[t] = rho * level[t-1] + innovations[t]
+        levels_rest = pytensor.scan(
+            fn=lambda innov, prev, rho: rho * prev + innov,
+            sequences=innovations,
+            outputs_info=level_init,
+            non_sequences=rho,
+            return_updates=False,
         )
 
-        # level shape: (n_weeks, n_icb)
-        # level[0] = level_init, level[t] = level[t-1] + innovation
         level = pm.Deterministic(
             "level",
-            pt.concatenate(
-                [level_init[None, :], levels_rest],
-                axis=0,
-            )
+            pt.concatenate([level_init[None, :], levels_rest], axis=0),
+        )   # shape: (n_weeks, n_icb)
+
+        # ── Shared seasonal component ─────────────────────────────────
+        # Four free parameters, explicitly centred via sum-to-zero
+        # reparameterisation. All seasons estimated freely — no season
+        # is forced to be the residual of the other three.
+        # The sum-to-zero constraint is applied as a shift so the
+        # seasonal component has zero net annual effect on the level.
+        sigma_season = pm.Exponential("sigma_season", lam=5)
+
+        season_raw = pm.Normal(
+            "season_raw",
+            0,
+            sigma_season,
+            shape=4,    # winter, spring, summer, autumn — all free
         )
 
-        # ── Observation model ─────────────────────────────────────────
+        # Enforce sum-to-zero by subtracting the mean from each effect.
+        # This is equivalent to the constraint but gives each season
+        # equal freedom in the posterior.
+        season_effects = pm.Deterministic(
+            "season_effects",
+            season_raw - pt.mean(season_raw),
+        )   # shape: (4,)  [winter, spring, summer, autumn]
+
+        # ── Latent pressure ───────────────────────────────────────────
+        latent = (
+            level[week_idx, icb_codes]
+            + season_effects[season_idx]
+        )
+
+        # ── Likelihood ────────────────────────────────────────────────
         sigma_obs = pm.Exponential("sigma_obs", lam=5)
 
         pm.Normal(
             "bed_obs",
-            mu=85 + level[week_idx, icb_codes] * 6,
+            mu=85 + latent * 6,
             sigma=sigma_obs,
             observed=beds,
         )
@@ -237,11 +338,31 @@ def current_pressure_samples(
 ) -> np.ndarray:
     """
     Posterior samples for the CURRENT pressure level of one ICB.
-    This is level[icb, T] — the final week — flattened across chains/draws.
-    Used by the dashboard as the pressure index.
+    Returns level[icb, T] — the final week — flattened across chains/draws.
+    This is the season-adjusted underlying level, not including seasonal effect.
     """
     level = idata.posterior["level"].values  # (chains, draws, n_weeks, n_icb)
     return level[:, :, -1, icb_idx].ravel()
+
+
+def current_total_pressure_samples(
+    idata: az.InferenceData,
+    icb_idx: int,
+    current_season: int,
+) -> np.ndarray:
+    """
+    Posterior samples for total pressure including the current season's effect.
+    Use this for dashboard risk probabilities — a winter reading should
+    reflect that winter adds to underlying pressure.
+
+    Parameters
+    ----------
+    current_season : int
+        Current season index: 0=winter, 1=spring, 2=summer, 3=autumn.
+    """
+    level          = idata.posterior["level"].values[:, :, -1, icb_idx].ravel()
+    season_effects = idata.posterior["season_effects"].values.reshape(-1, 4)
+    return level + season_effects[:, current_season]
 
 
 def direction_of_travel(
@@ -250,12 +371,12 @@ def direction_of_travel(
     lookback_weeks: int = 4,
 ) -> np.ndarray:
     """
-    Posterior samples for the change in pressure over the last N weeks.
+    Posterior samples for change in underlying level over the last N weeks.
     Positive = rising pressure, negative = falling.
-
-    Returns samples of (level[T] - level[T - lookback_weeks]).
+    Uses the level (seasonal component removed) so direction of travel
+    reflects genuine trend, not seasonal fluctuation.
     """
-    level = idata.posterior["level"].values  # (chains, draws, n_weeks, n_icb)
+    level    = idata.posterior["level"].values
     current  = level[:, :, -1, icb_idx].ravel()
     previous = level[:, :, -lookback_weeks, icb_idx].ravel()
     return current - previous
@@ -265,36 +386,37 @@ def pressure_summary(
     idata: az.InferenceData,
     enc: dict,
     lookback_weeks: int = 4,
+    current_season: int = 0,
 ) -> pd.DataFrame:
     """
-    Clinical summary table: one row per ICB showing current pressure,
-    direction of travel, and key probabilities.
+    Clinical summary table: one row per ICB.
 
     Columns
     -------
-    icb             — ICB name
-    pressure_median — median current pressure (latent scale)
-    pressure_lo     — 10th percentile
-    pressure_hi     — 90th percentile
-    bed_occ_median  — implied bed occupancy (%)
-    p_above_concern — P(pressure > 0.5)
-    p_above_high    — P(pressure > 1.1)
-    dot_median      — median direction of travel over lookback_weeks
-    p_rising        — P(pressure rising over lookback_weeks)
+    icb              — ICB name
+    pressure_median  — median current level (latent scale, ex-seasonal)
+    pressure_lo      — 10th percentile of level
+    pressure_hi      — 90th percentile of level
+    bed_occ_median   — implied bed occupancy including current season (%)
+    p_above_concern  — P(total pressure > 0.5)
+    p_above_high     — P(total pressure > 1.1)
+    dot_median       — median direction of travel over lookback_weeks
+    p_rising         — P(underlying level is rising)
     """
     rows = []
     for i, icb_name in enumerate(enc["categories"]):
-        samples = current_pressure_samples(idata, i)
-        dot     = direction_of_travel(idata, i, lookback_weeks)
+        level_samples = current_pressure_samples(idata, i)
+        total_samples = current_total_pressure_samples(idata, i, current_season)
+        dot           = direction_of_travel(idata, i, lookback_weeks)
 
         rows.append(dict(
             icb=icb_name,
-            pressure_median=float(np.median(samples)),
-            pressure_lo=float(np.percentile(samples, 10)),
-            pressure_hi=float(np.percentile(samples, 90)),
-            bed_occ_median=float(85 + np.median(samples) * 6),
-            p_above_concern=float(np.mean(samples > 0.5)),
-            p_above_high=float(np.mean(samples > 1.1)),
+            pressure_median=float(np.median(level_samples)),
+            pressure_lo=float(np.percentile(level_samples, 10)),
+            pressure_hi=float(np.percentile(level_samples, 90)),
+            bed_occ_median=float(85 + np.median(total_samples) * 6),
+            p_above_concern=float(np.mean(total_samples > 0.5)),
+            p_above_high=float(np.mean(total_samples > 1.1)),
             dot_median=float(np.median(dot)),
             p_rising=float(np.mean(dot > 0)),
         ))
@@ -314,22 +436,23 @@ def save_posteriors(
     """
     Save posteriors to NetCDF with a Windows-safe atomic swap.
 
-    Strategy:
-      1. Write fully to a temp file (.posteriors_tmp_*.nc)
-      2. On POSIX: os.replace() is atomic
-      3. On Windows: os.replace() fails if the destination is open.
-         Instead write to a staging file (.posteriors_new.nc), then
-         rename the old file to a backup and the new file into place.
-         The window where neither file exists is microseconds — the
-         dashboard's @st.cache_resource will serve the old cached copy
-         during that window, which is safe.
+    Writes to a temp file first, then replaces the target.
+    On Windows, if the file is locked by the dashboard, stages the
+    new file as .posteriors_new.nc for the app to pick up on next load.
     """
     import sys
     import tempfile
     from pathlib import Path
 
-    final_path  = Path(path)
+    final_path = Path(path)
     idata.attrs["icbs"] = list(enc["categories"])
+    # Store the calendar month of the final training week so the dashboard
+    # can determine the current season without a winter_start_week offset.
+    last_week_mask = np.where(enc["week_idx"] == enc["n_weeks"] - 1)[0]
+    if len(last_week_mask) > 0:
+        # season_idx values: 0=Winter,1=Spring,2=Summer,3=Autumn
+        # Store the season directly — reconstructing the month isn't needed
+        idata.attrs["last_season"] = int(enc["season_idx"][last_week_mask[0]])
 
     tmp_fd, tmp_path = tempfile.mkstemp(
         dir=final_path.parent,
@@ -341,7 +464,6 @@ def save_posteriors(
         idata.to_netcdf(tmp_path, engine="h5netcdf")
 
         if sys.platform == "win32":
-            # Windows: rename old → backup, new → final, remove backup
             backup_path = final_path.with_suffix(".nc.bak")
             try:
                 if final_path.exists():
@@ -350,14 +472,11 @@ def save_posteriors(
                 if backup_path.exists():
                     os.unlink(str(backup_path))
             except PermissionError:
-                # Dashboard still has the file open — write alongside and
-                # let the next cycle retry. Dashboard keeps serving old copy.
                 staged = final_path.with_name(".posteriors_new.nc")
                 if os.path.exists(tmp_path):
                     os.replace(tmp_path, str(staged))
                 raise RuntimeError(
-                    f"posteriors.nc is locked by another process. "
-                    f"Staged new posteriors at {staged} — will retry next cycle."
+                    f"posteriors.nc is locked. Staged at {staged} — retrying next cycle."
                 )
         else:
             os.replace(tmp_path, str(final_path))
@@ -374,191 +493,6 @@ def save_posteriors(
 
 
 # ─────────────────────────────────────────
-# Plots
-# ─────────────────────────────────────────
-
-def plot_prior_predictive(idata: az.InferenceData) -> None:
-    prior_beds = idata.prior_predictive["bed_obs"].values.squeeze()
-    flat = prior_beds.flatten()
-    print(f"Mean:        {flat.mean():.1f}")
-    print(f"Std:         {flat.std():.1f}")
-    print(f"Range:       [{flat.min():.1f}, {flat.max():.1f}]")
-    print(f"% above 100: {(flat > 100).mean()*100:.1f}%")
-    print(f"% below 0:   {(flat < 0).mean()*100:.1f}%")
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    for i in range(min(100, prior_beds.shape[0])):
-        ax.hist(prior_beds[i], bins=30, alpha=0.05, color="steelblue", density=True)
-    ax.axvline(prior_beds.mean(), color="red",    linewidth=2,    label="Mean")
-    ax.axvline(85,               color="black",  linestyle="--", label="Baseline (85%)")
-    ax.axvline(100,              color="orange", linestyle="--", label="Max (100%)")
-    ax.set_xlabel("Bed occupancy (%)")
-    ax.set_title("Prior predictive check")
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_posterior_predictive(
-    idata: az.InferenceData,
-    observed: np.ndarray,
-) -> None:
-    post_beds = idata.posterior_predictive["bed_obs"].values.squeeze()
-    post_beds = post_beds.reshape(-1, len(observed))
-    fig, ax = plt.subplots(figsize=(8, 4))
-    for i in range(min(100, post_beds.shape[0])):
-        ax.hist(post_beds[i], bins=40, alpha=0.05, color="steelblue", density=True)
-    ax.hist(observed, bins=40, alpha=0.8, color="red",
-            density=True, histtype="step", linewidth=2, label="Observed")
-    ax.set_xlabel("Bed occupancy (%)")
-    ax.set_title("Posterior predictive check")
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_residuals(idata: az.InferenceData, observed: np.ndarray) -> None:
-    predicted = idata.posterior_predictive["bed_obs"].mean(("chain", "draw")).values
-    residuals = observed - predicted
-    plt.figure(figsize=(8, 3))
-    plt.plot(residuals, alpha=0.7, linewidth=0.8)
-    plt.axhline(0, color="red", linestyle="--", linewidth=1)
-    plt.title("Residuals")
-    plt.xlabel("Observation index")
-    plt.ylabel("Residual")
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_pressure_trajectories(
-    idata: az.InferenceData,
-    enc: dict,
-    train: pd.DataFrame,
-) -> None:
-    """
-    Plot the posterior pressure trajectory for each ICB over time.
-    Shows median + 80% credible band, making direction of travel visible.
-    """
-    level  = idata.posterior["level"].values  # (chains, draws, n_weeks, n_icb)
-    level  = level.reshape(-1, level.shape[2], level.shape[3])  # (S, n_weeks, n_icb)
-    weeks  = np.arange(enc["n_weeks"]) + train["week"].min()
-
-    n_icb = enc["n_icb"]
-    fig, axes = plt.subplots(n_icb, 1, figsize=(12, 3 * n_icb), sharex=True)
-    if n_icb == 1:
-        axes = [axes]
-
-    for i, (ax, icb_name) in enumerate(zip(axes, enc["categories"])):
-        icb_level = level[:, :, i]             # (S, n_weeks)
-        lo  = np.percentile(icb_level, 10, axis=0)
-        mid = np.percentile(icb_level, 50, axis=0)
-        hi  = np.percentile(icb_level, 90, axis=0)
-
-        # Convert to bed occupancy scale for clinical readability
-        ax.fill_between(weeks, 85 + lo * 6, 85 + hi * 6,
-                        alpha=0.3, color="steelblue", label="80% CI")
-        ax.plot(weeks, 85 + mid * 6,
-                color="steelblue", linewidth=1.5, label="Median")
-
-        # Overlay observed data
-        obs = train[train["icb"] == icb_name]
-        ax.scatter(obs["week"], obs["bed_occupancy"],
-                   s=6, color="black", alpha=0.4, label="Observed", zorder=3)
-
-        ax.axhline(95, color="orange", linestyle="--", linewidth=1,
-                   alpha=0.7, label="95% reference")
-        ax.axhline(100, color="red", linestyle="--", linewidth=1,
-                   alpha=0.7, label="100% reference")
-        ax.set_ylabel("Bed occupancy (%)")
-        ax.set_title(icb_name)
-        ax.legend(fontsize=7, loc="upper left")
-
-    axes[-1].set_xlabel("Week")
-    plt.suptitle("Posterior pressure trajectories per ICB", fontsize=13, y=1.01)
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_direction_of_travel(
-    idata: az.InferenceData,
-    enc: dict,
-    lookback_weeks: int = 4,
-) -> None:
-    """
-    Show the posterior distribution of pressure change over the last N weeks
-    for each ICB. Directly answers: is pressure rising or falling?
-    """
-    fig, ax = plt.subplots(figsize=(10, 4))
-
-    for i, icb_name in enumerate(enc["categories"]):
-        dot = direction_of_travel(idata, i, lookback_weeks)
-        p_rising = float(np.mean(dot > 0))
-        label = f"{icb_name}  (P(rising)={p_rising:.0%})"
-        ax.hist(dot * 6, bins=40, density=True, alpha=0.5, label=label)
-
-    ax.axvline(0, color="black", linewidth=1.5, linestyle="--")
-    ax.set_xlabel(f"Change in bed occupancy (%) over last {lookback_weeks} weeks")
-    ax.set_title("Direction of travel — posterior over pressure change")
-    ax.legend(fontsize=8)
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_clinical_summary(summary: pd.DataFrame) -> None:
-    """
-    Heatmap-style clinical summary: ICBs ranked by current pressure
-    with direction of travel and risk probabilities.
-    """
-    fig, axes = plt.subplots(1, 3, figsize=(14, max(3, len(summary) * 0.6 + 1.5)))
-
-    icbs = summary["icb"].str.replace("NHS ", "").str.replace(" ICB", "")
-    y    = np.arange(len(icbs))
-
-    # Panel 1: current pressure (bed occupancy scale)
-    ax = axes[0]
-    xerr = np.array([
-        summary["bed_occ_median"] - (85 + summary["pressure_lo"] * 6),
-        (85 + summary["pressure_hi"] * 6) - summary["bed_occ_median"],
-    ])
-    colors = ["#b91c1c" if p > 0.25 else "#d97706" if p > 0.08 else "#15803d"
-              for p in summary["p_above_high"]]
-    ax.barh(y, summary["bed_occ_median"], xerr=xerr, color=colors,
-            alpha=0.75, height=0.6, capsize=3)
-    ax.axvline(95,  color="orange", linestyle="--", linewidth=1)
-    ax.axvline(100, color="red",    linestyle="--", linewidth=1)
-    ax.set_yticks(y)
-    ax.set_yticklabels(icbs, fontsize=9)
-    ax.set_xlabel("Current bed occupancy % (median + 80% CI)")
-    ax.set_title("Current pressure")
-
-    # Panel 2: P(above high threshold)
-    ax = axes[1]
-    ax.barh(y, summary["p_above_high"], color=colors, alpha=0.75, height=0.6)
-    ax.axvline(0.25, color="red",    linestyle="--", linewidth=1, label="Elevated threshold")
-    ax.axvline(0.08, color="orange", linestyle="--", linewidth=1, label="Medium threshold")
-    ax.set_yticks(y)
-    ax.set_yticklabels([""] * len(icbs))
-    ax.set_xlabel("P(pressure above high reference)")
-    ax.set_title("Risk probability")
-    ax.legend(fontsize=7)
-
-    # Panel 3: direction of travel
-    ax = axes[2]
-    dot_colors = ["#b91c1c" if d > 0.05 else "#15803d" if d < -0.05 else "#64748b"
-                  for d in summary["dot_median"]]
-    ax.barh(y, summary["dot_median"] * 6, color=dot_colors, alpha=0.75, height=0.6)
-    ax.axvline(0, color="black", linewidth=1)
-    ax.set_yticks(y)
-    ax.set_yticklabels([""] * len(icbs))
-    ax.set_xlabel("Pressure change (% occ, last 4 weeks)")
-    ax.set_title("Direction of travel")
-
-    plt.suptitle("ICB System Pressure — Clinical Summary", fontsize=13, y=1.02)
-    plt.tight_layout()
-    plt.show()
-
-
-# ─────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────
 
@@ -567,45 +501,72 @@ def fit_pressure_model(
     *,
     fast: bool | None = None,
 ) -> tuple:
+    """
+    Full inference pipeline.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Raw weekly NHS data including England row.
+        Must contain a 'month' column (added by generate_synthetic_data.py).
+    fast : bool | None
+        If True, use fewer draws for quick iteration.
+        Defaults to the PRESSURE_MODEL_FAST environment variable.
+    """
     if fast is None:
         fast = _FAST
     draws, tune = (400, 400) if fast else (2000, 2000)
 
-    train, test = prepare_data(df)
-    enc = encode(train, test)
+    data = prepare_data(df)
+    enc  = encode(data)
 
-    print(f"Training rows:  {len(train)}  |  Holdout rows: {len(test)}")
-    print(f"Training weeks: {train['week'].min()}–{train['week'].max()}")
-    print(f"Holdout  weeks: {test['week'].min()}–{test['week'].max()}")
-    print(f"ICBs:           {list(enc['categories'])}")
+    print(f"Rows:  {len(data)}")
+    print(f"Weeks: {data['week'].min()}–{data['week'].max()}")
+    print(f"ICBs:  {list(enc['categories'])}")
+
+    check_season_alignment(enc, data)
 
     model = build_model(enc)
 
     # 1. Prior predictive check
     idata = sample_prior(model)
+    #plot_prior_predictive(idata)
 
     # 2. Fit posterior
     idata = sample_posterior(model, draws, tune)
 
     # 3. Posterior predictive check
     idata = sample_posterior_predictive(model, idata)
+    #plot_posterior_predictive(idata, enc["beds"])
+    #plot_residuals(idata, enc["beds"])
 
     # 4. Convergence
     print("\nConvergence summary:")
     print(az.summary(idata, var_names=[
-        "mu_national", "sigma_icb", "sigma_drift", "sigma_obs"
+        "mu_national", "sigma_icb", "rho",
+        "sigma_drift", "sigma_season", "sigma_obs",
     ]))
 
     # 5. Clinical outputs
+    #plot_seasonal_effects(idata)
+    #plot_pressure_trajectories(idata, enc, data)
+    #plot_direction_of_travel(idata, enc)
 
-    summary = pressure_summary(idata, enc)
+    # Current season index — find the last week's season reliably
+    # (don't use [-1] since rows may not be sorted by week)
+    last_week_pos  = np.where(enc["week_idx"] == enc["week_idx"].max())[0][0]
+    current_season = int(enc["season_idx"][last_week_pos])
+    print(f"\nCurrent season: {SEASON_NAMES[current_season]}")
+
+    summary = pressure_summary(idata, enc, current_season=current_season)
     print("\nClinical summary (ranked by current pressure):")
     print(summary.to_string(index=False, float_format="{:.3f}".format))
+    #plot_clinical_summary(summary)
 
     # 6. Save for dashboard
     save_posteriors(idata, enc)
 
-    return model, idata, train, test, enc
+    return model, idata, enc
 
 
 def main():

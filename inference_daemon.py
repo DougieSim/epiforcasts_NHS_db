@@ -79,7 +79,7 @@ def step_inference(df: pd.DataFrame, fast: bool) -> bool:
     """
     logger.info("Running inference...")
     try:
-        model, idata, train, test, enc = fit_pressure_model(df, fast=fast)
+        model, idata, enc = fit_pressure_model(df, fast=fast)
         logger.info("Inference complete.")
         return True
     except Exception:

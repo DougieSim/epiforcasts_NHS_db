@@ -26,13 +26,18 @@ Improvement suggestions (next iterations)
 from __future__ import annotations
 
 import hashlib
+from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
 # --- Reproducibility & scale -------------------------------------------------
-SYNTHETIC_DGP_VERSION = "2026.04.5"
+SYNTHETIC_DGP_VERSION = "2026.04.8"
 
 MASTER_SEED = 2026
+
+# Week 0 maps to the first Monday of 2023. Each subsequent week advances
+# by 7 days so dates are stable across regenerations of the dataset.
+START_DATE = date(2023, 1, 2)
 
 WEEKLY_CSV = "synthetic_nhs_pressure.csv"
 PATIENT_CSV = "synthetic_patient_episodes.csv"
@@ -108,7 +113,7 @@ def _apply_measurement_noise(
     *,
     count_columns: frozenset[str],
 ) -> None:
-    skip = {"week", "icb", "synthetic_dgp_version"}
+    skip = {"week", "week_date", "month", "icb", "synthetic_dgp_version"}
     for col in df.columns:
         if col in skip:
             continue
@@ -136,11 +141,20 @@ def build_weekly_icb_frame(
     if lp is None:
         lp = _latent_series(rng, scale, n_weeks)
     t = np.arange(n_weeks, dtype=float)
-    seasonal = 0.08 * np.cos(2 * np.pi * (t - 8) / 52.0)
+    # Seasonal pattern: peaks in Jan, troughs in Jul — matches real NHS winter pressure.
+    # Amplitude 0.15 on the latent scale → ~2.5% occupancy swing peak-to-trough,
+    # which is realistic for a synthetic demo while remaining visible in the data.
+    # Phase offset of 6 weeks (peak mid-Feb) gives all four seasons
+    # a clearly distinct signal: Winter > Spring > Autumn > Summer.
+    # This matches the real NHS pattern where peak pressure runs through Feb.
+    seasonal = 0.15 * np.cos(2 * np.pi * (t - 6) / 52.0)
 
     resp_111 = rng.negative_binomial(25, 1 / (1 + np.exp(lp + seasonal)))
+    # Seasonal contribution to bed occupancy: positive in winter (cos peaks Jan),
+    # negative in summer (cos troughs Jul). Scale of 4 means ~0.6% occupancy
+    # swing per 0.15 unit of seasonal → ~1.8% peak-to-trough, realistic for demo.
     bed_occ = np.clip(
-        84 + lp * 7 + rng.normal(0, 3, n_weeks),
+        84 + lp * 7 + seasonal * 4 + rng.normal(0, 3, n_weeks),
         70,
         100,
     )
@@ -208,9 +222,14 @@ def build_weekly_icb_frame(
         10.0,
     )
 
+    week_dates = [START_DATE + timedelta(weeks=int(w)) for w in range(n_weeks)]
+    week_months = [d.month for d in week_dates]
+
     df = pd.DataFrame(
         {
             "week": np.arange(n_weeks, dtype=int),
+            "week_date": [d.isoformat() for d in week_dates],
+            "month": week_months,
             "icb": icb,
             "synthetic_dgp_version": SYNTHETIC_DGP_VERSION,
             "resp_111_calls": resp_111.astype(float),

@@ -17,10 +17,14 @@ Usage
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+# Must match generate_synthetic_data.py so week→date mapping is consistent.
+_START_DATE = date(2023, 1, 2)
 
 logger = logging.getLogger(__name__)
 
@@ -161,12 +165,20 @@ class SyntheticGenerator:
             .reset_index()
         )
 
+        new_week_date = _START_DATE + timedelta(weeks=new_week)
+        new_month     = new_week_date.month
+
         rows = []
         for _, last_row in last_rows.iterrows():
             icb      = last_row["icb"]
             icb_p    = self._params[icb]
             icb_b    = self._bounds[icb]
-            new_row  = {"week": new_week, "icb": icb}
+            new_row  = {
+                "week": new_week,
+                "week_date": new_week_date.isoformat(),
+                "month": new_month,
+                "icb": icb,
+            }
 
             for col in NUMERIC_COLS:
                 if col not in icb_p:
@@ -193,7 +205,12 @@ class SyntheticGenerator:
 
         # Also update England aggregate (simple mean across ICBs)
         new_df  = pd.DataFrame(rows)
-        england = {"week": new_week, "icb": "England"}
+        england = {
+            "week": new_week,
+            "week_date": new_week_date.isoformat(),
+            "month": new_month,
+            "icb": "England",
+        }
         for col in NUMERIC_COLS:
             if col in new_df.columns:
                 england[col] = float(new_df[col].mean())
