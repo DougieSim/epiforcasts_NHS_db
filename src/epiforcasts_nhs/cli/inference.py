@@ -28,6 +28,7 @@ import pymc as pm
 import arviz as az
 
 from epiforcasts_nhs.core.cache import CacheManager
+from epiforcasts_nhs.core.utils import LATENT_BASELINE, LATENT_SCALE
 
 
 def fit_pressure_model(
@@ -82,7 +83,7 @@ def fit_pressure_model(
 
         pm.Normal(
             "bed_obs",
-            mu=85 + latent_pressure * 6,
+            mu=LATENT_BASELINE + latent_pressure * LATENT_SCALE,
             sigma=sigma_obs,
             observed=beds,
         )

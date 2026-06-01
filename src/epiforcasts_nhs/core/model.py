@@ -21,9 +21,11 @@ import pandas as pd
 import arviz as az
 
 from epiforcasts_nhs.core.utils import (
+    LATENT_BASELINE,
+    LATENT_SCALE,
     SEASON_NAMES,
     check_season_alignment,
-    current_total_pressure_samples,
+    current_season_from_enc,
     encode,
     prepare_data,
     pressure_summary,
@@ -74,7 +76,7 @@ def build_model(enc: dict) -> pm.Model:
 
         latent    = level[week_idx, icb_codes] + season_effects[season_idx]
         sigma_obs = pm.Exponential("sigma_obs", lam=5)
-        pm.Normal("bed_obs", mu=85 + latent * 6, sigma=sigma_obs, observed=beds)
+        pm.Normal("bed_obs", mu=LATENT_BASELINE + latent * LATENT_SCALE, sigma=sigma_obs, observed=beds)
 
     return model
 
@@ -187,8 +189,7 @@ def fit_pressure_model(df: pd.DataFrame, *, fast: bool | None = None) -> tuple:
         "mu_national", "sigma_icb", "rho", "sigma_drift", "sigma_season", "sigma_obs",
     ]))
 
-    last_week_pos  = np.where(enc["week_idx"] == enc["week_idx"].max())[0][0]
-    current_season = int(enc["season_idx"][last_week_pos])
+    current_season = current_season_from_enc(enc)
     print(f"\nCurrent season: {SEASON_NAMES[current_season]}")
 
     summary = pressure_summary(idata, enc, current_season=current_season)

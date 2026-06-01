@@ -18,11 +18,20 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import arviz as az
 
+from epiforcasts_nhs.core.utils import (
+    LATENT_BASELINE,
+    LATENT_SCALE,
+    MONTH_TO_SEASON,
+    direction_of_travel,
+)
 from epiforcasts_nhs.dashboard.utils import (
     SEASON_NAMES,
     credible_triplet,
     current_season_index,
+    dot_travel_colors,
     kalman_filter,
+    pressure_colors,
+    seasonal_effect_samples,
     season_per_week_samples,
     week_season_map,
 )
@@ -42,7 +51,7 @@ def plot_prior_predictive(idata: az.InferenceData) -> None:
     for i in range(min(100, prior_beds.shape[0])):
         ax.hist(prior_beds[i], bins=30, alpha=0.05, color="steelblue", density=True)
     ax.axvline(prior_beds.mean(), color="red",   linewidth=2, label="Mean")
-    ax.axvline(85,               color="black",  linestyle="--", label="Baseline (85%)")
+    ax.axvline(LATENT_BASELINE,  color="black",  linestyle="--", label=f"Baseline ({LATENT_BASELINE:.0f}%)")
     ax.axvline(100,              color="orange", linestyle="--", label="Max (100%)")
     ax.set_xlabel("Bed occupancy (%)")
     ax.set_title("Prior predictive check")
@@ -79,7 +88,7 @@ def plot_residuals(idata: az.InferenceData, observed: np.ndarray) -> None:
 
 
 def plot_seasonal_effects(idata: az.InferenceData) -> None:
-    effects = idata.posterior["season_effects"].values.reshape(-1, 4) * 6
+    effects = seasonal_effect_samples(idata) * LATENT_SCALE
     colors  = ["#378ADD", "#1D9E75", "#EF9F27", "#D85A30"]
     fig, ax = plt.subplots(figsize=(9, 4))
     for i, (name, color) in enumerate(zip(SEASON_NAMES, colors)):
@@ -98,9 +107,10 @@ def plot_seasonal_effects(idata: az.InferenceData) -> None:
 
 
 def plot_pressure_trajectories(idata: az.InferenceData, enc: dict, df: pd.DataFrame) -> None:
-    level_f  = idata.posterior["level"].values.reshape(-1, idata.posterior["level"].shape[2], idata.posterior["level"].shape[3])
-    season_f = idata.posterior["season_effects"].values.reshape(-1, 4)
-
+    level_f  = idata.posterior["level"].values.reshape(
+        -1, idata.posterior["level"].shape[2], idata.posterior["level"].shape[3]
+    )
+    season_f        = seasonal_effect_samples(idata)
     weeks           = np.arange(enc["n_weeks"]) + df["week"].min()
     w_season        = week_season_map(enc)
     season_per_week = season_per_week_samples(season_f, w_season)
@@ -115,8 +125,12 @@ def plot_pressure_trajectories(idata: az.InferenceData, enc: dict, df: pd.DataFr
         lo    = np.percentile(total, 10, axis=0)
         mid   = np.percentile(total, 50, axis=0)
         hi    = np.percentile(total, 90, axis=0)
-        ax.fill_between(weeks, 85 + lo * 6, 85 + hi * 6, alpha=0.3, color="steelblue", label="80% CI")
-        ax.plot(weeks, 85 + mid * 6, color="steelblue", linewidth=1.5, label="Fitted median")
+        ax.fill_between(weeks,
+                        LATENT_BASELINE + lo * LATENT_SCALE,
+                        LATENT_BASELINE + hi * LATENT_SCALE,
+                        alpha=0.3, color="steelblue", label="80% CI")
+        ax.plot(weeks, LATENT_BASELINE + mid * LATENT_SCALE,
+                color="steelblue", linewidth=1.5, label="Fitted median")
         obs = df[df["icb"] == icb_name]
         ax.scatter(obs["week"], obs["bed_occupancy"], s=6, color="black", alpha=0.4, label="Observed", zorder=3)
         ax.axhline(95, color="orange", linestyle="--", linewidth=1, alpha=0.7)
@@ -131,11 +145,10 @@ def plot_pressure_trajectories(idata: az.InferenceData, enc: dict, df: pd.DataFr
 
 
 def plot_direction_of_travel(idata: az.InferenceData, enc: dict, lookback_weeks: int = 4) -> None:
-    from epiforcasts_nhs.core.utils import direction_of_travel
     fig, ax = plt.subplots(figsize=(10, 4))
     for i, icb_name in enumerate(enc["categories"]):
         dot = direction_of_travel(idata, i, lookback_weeks)
-        ax.hist(dot * 6, bins=40, density=True, alpha=0.5,
+        ax.hist(dot * LATENT_SCALE, bins=40, density=True, alpha=0.5,
                 label=f"{icb_name}  (P(rising)={np.mean(dot > 0):.0%})")
     ax.axvline(0, color="black", linewidth=1.5, linestyle="--")
     ax.set_xlabel(f"Change in underlying level (% occ) over last {lookback_weeks} weeks")
@@ -149,13 +162,12 @@ def plot_clinical_summary(summary: pd.DataFrame) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(14, max(3, len(summary) * 0.6 + 1.5)))
     icbs   = summary["icb"].str.replace("NHS ", "").str.replace(" ICB", "")
     y      = np.arange(len(icbs))
-    colors = ["#b91c1c" if p > 0.25 else "#d97706" if p > 0.08 else "#15803d"
-              for p in summary["p_above_high"]]
+    colors = pressure_colors(summary["p_above_high"])
 
     ax = axes[0]
     xerr = np.array([
-        summary["bed_occ_median"] - (85 + summary["pressure_lo"] * 6),
-        (85 + summary["pressure_hi"] * 6) - summary["bed_occ_median"],
+        summary["bed_occ_median"] - (LATENT_BASELINE + summary["pressure_lo"] * LATENT_SCALE),
+        (LATENT_BASELINE + summary["pressure_hi"] * LATENT_SCALE) - summary["bed_occ_median"],
     ])
     ax.barh(y, summary["bed_occ_median"], xerr=xerr, color=colors, alpha=0.75, height=0.6, capsize=3)
     ax.axvline(95, color="orange", linestyle="--", linewidth=1)
@@ -172,9 +184,9 @@ def plot_clinical_summary(summary: pd.DataFrame) -> None:
     ax.legend(fontsize=7)
 
     ax = axes[2]
-    dot_colors = ["#b91c1c" if d > 0.05 else "#15803d" if d < -0.05 else "#64748b"
-                  for d in summary["dot_median"]]
-    ax.barh(y, summary["dot_median"] * 6, color=dot_colors, alpha=0.75, height=0.6)
+    # dot_median is on the latent scale; multiply by LATENT_SCALE for % occupancy
+    dot_pct = [d * LATENT_SCALE for d in summary["dot_median"]]
+    ax.barh(y, dot_pct, color=dot_travel_colors(dot_pct), alpha=0.75, height=0.6)
     ax.axvline(0, color="black", linewidth=1)
     ax.set_yticks(y); ax.set_yticklabels([""] * len(icbs))
     ax.set_xlabel("Underlying level change (% occ, last 4 weeks)"); ax.set_title("Direction of travel")
@@ -237,21 +249,20 @@ def fig_pressure_trajectory(idata: az.InferenceData, df: pd.DataFrame, icb: str)
 
     filtered_mean, filtered_std = kalman_filter(obs_beds, sigma_drift, sigma_obs, level_init, var_init)
 
-    season_mean = post["season_effects"].values.reshape(-1, 4).mean(axis=0)
-    _m2s = {12:0,1:0,2:0, 3:1,4:1,5:1, 6:2,7:2,8:2, 9:3,10:3,11:3}
+    season_mean = seasonal_effect_samples(idata).mean(axis=0)
 
     if "month" in icb_df.columns:
         season_indices = [
-            _m2s[int(m)] if pd.notna(m) else int(idx % 4)
+            MONTH_TO_SEASON[int(m)] if pd.notna(m) else int(idx % 4)
             for idx, (m, _) in enumerate(zip(icb_df["month"].values, weeks))
         ]
         season_week = season_mean[np.array(season_indices)]
     else:
         season_week = np.array([season_mean[int(i % 4)] for i in range(n_weeks)])
 
-    occ_mean = 85 + (filtered_mean + season_week) * 6
-    occ_lo   = 85 + (filtered_mean - 1.645 * filtered_std + season_week) * 6
-    occ_hi   = 85 + (filtered_mean + 1.645 * filtered_std + season_week) * 6
+    occ_mean = LATENT_BASELINE + (filtered_mean + season_week) * LATENT_SCALE
+    occ_lo   = LATENT_BASELINE + (filtered_mean - 1.645 * filtered_std + season_week) * LATENT_SCALE
+    occ_hi   = LATENT_BASELINE + (filtered_mean + 1.645 * filtered_std + season_week) * LATENT_SCALE
 
     fig, ax = plt.subplots(figsize=(11, 3.5), layout="constrained")
     ax.fill_between(weeks, occ_lo, occ_hi, alpha=0.25, color="#1d4ed8", label="90% filtered CI")
@@ -271,7 +282,7 @@ def fig_pressure_trajectory(idata: az.InferenceData, df: pd.DataFrame, icb: str)
 
 
 def fig_seasonal_effects(idata: az.InferenceData) -> plt.Figure:
-    effects = idata.posterior["season_effects"].values.reshape(-1, 4) * 6
+    effects = seasonal_effect_samples(idata) * LATENT_SCALE
     colors  = ["#378ADD", "#1D9E75", "#EF9F27", "#D85A30"]
 
     fig, ax = plt.subplots(figsize=(9, 3.5), layout="constrained")
@@ -291,8 +302,10 @@ def fig_seasonal_effects(idata: az.InferenceData) -> plt.Figure:
 
 def fig_clinical_summary(idata: az.InferenceData, icb_filter: str | None = None) -> plt.Figure:
     icbs       = list(idata.attrs.get("icbs", []))
-    level_f    = idata.posterior["level"].values.reshape(-1, idata.posterior["level"].shape[2], idata.posterior["level"].shape[3])
-    season_f   = idata.posterior["season_effects"].values.reshape(-1, 4)
+    level_f    = idata.posterior["level"].values.reshape(
+        -1, idata.posterior["level"].shape[2], idata.posterior["level"].shape[3]
+    )
+    season_f   = seasonal_effect_samples(idata)
     season_now = current_season_index(idata)
     icb_filter_str = str(icb_filter) if icb_filter is not None else None
 
@@ -302,12 +315,13 @@ def fig_clinical_summary(idata: az.InferenceData, icb_filter: str | None = None)
             continue
         lev   = level_f[:, -1, i]
         total = lev + season_f[:, season_now]
-        dot   = (level_f[:, -1, i] - level_f[:, -4, i]) * 6
+        # dot is already in % occupancy (multiplied by LATENT_SCALE)
+        dot   = (level_f[:, -1, i] - level_f[:, -4, i]) * LATENT_SCALE
         rows.append(dict(
             icb=icb_name,
-            median=float(85 + np.median(total) * 6),
-            lo=float(85 + np.percentile(lev, 10) * 6),
-            hi=float(85 + np.percentile(lev, 90) * 6),
+            median=float(LATENT_BASELINE + np.median(total) * LATENT_SCALE),
+            lo=float(LATENT_BASELINE + np.percentile(lev, 10) * LATENT_SCALE),
+            hi=float(LATENT_BASELINE + np.percentile(lev, 90) * LATENT_SCALE),
             p_high=float(np.mean(total > 1.1)),
             dot=float(np.median(dot)),
         ))
@@ -317,15 +331,14 @@ def fig_clinical_summary(idata: az.InferenceData, icb_filter: str | None = None)
     y           = np.arange(len(summary))
     n_rows      = len(summary)
     fig_height  = 2.5 if n_rows == 1 else max(3, n_rows * 0.7 + 1.5)
-    colors      = ["#b91c1c" if p > 0.25 else "#d97706" if p > 0.08 else "#15803d"
-                   for p in summary["p_high"]]
+    colors      = pressure_colors(summary["p_high"])
 
     fig, axes = plt.subplots(1, 3, figsize=(14, fig_height), layout="constrained")
 
     ax = axes[0]
     xerr = np.array([summary["median"] - summary["lo"], summary["hi"] - summary["median"]])
     ax.barh(y, summary["median"], xerr=xerr, color=colors, alpha=0.75, height=0.6, capsize=3)
-    ax.axvline(95, color="#d97706", linestyle="--", linewidth=1)
+    ax.axvline(95,  color="#d97706", linestyle="--", linewidth=1)
     ax.axvline(100, color="#b91c1c", linestyle="--", linewidth=1)
     ax.set_yticks(y); ax.set_yticklabels(short_names, fontsize=9)
     ax.set_xlabel("Bed occupancy % (median + 80% CI)"); ax.set_title("Current pressure (incl. season)")
@@ -341,8 +354,7 @@ def fig_clinical_summary(idata: az.InferenceData, icb_filter: str | None = None)
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
 
     ax = axes[2]
-    dot_colors = ["#b91c1c" if d > 0.5 else "#15803d" if d < -0.5 else "#64748b" for d in summary["dot"]]
-    ax.barh(y, summary["dot"], color=dot_colors, alpha=0.75, height=0.6)
+    ax.barh(y, summary["dot"], color=dot_travel_colors(summary["dot"]), alpha=0.75, height=0.6)
     ax.axvline(0, color="#0f172a", linewidth=1)
     ax.set_yticks(y); ax.set_yticklabels([""] * n_rows)
     ax.set_xlabel("Underlying level change (% occ, last 4 weeks)"); ax.set_title("Direction of travel")

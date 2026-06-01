@@ -23,9 +23,9 @@ from epiforcasts_nhs.dashboard.utils import (
     THRESHOLD_ELEVATED,
     credible_triplet,
     current_season_index,
-    level_only_samples,
     pressure_index_samples,
     resolve_icb_index,
+    risk_band,
     seasonal_effect_samples,
 )
 from epiforcasts_nhs.dashboard.plots import (
@@ -44,22 +44,6 @@ _POLL_INTERVAL_S = 10
 # Helpers
 # ─────────────────────────────────────────
 
-def _risk_band(
-    p_elevated: float,
-    p_concern: float,
-    *,
-    pe_hi: float,
-    pc_hi: float,
-    pe_med: float,
-    pc_med: float,
-) -> tuple[str, str]:
-    if p_elevated >= pe_hi or p_concern >= pc_hi:
-        return "Elevated", "Prioritise review of capacity, flow, and escalation plans (indicative only)."
-    if p_elevated >= pe_med or p_concern >= pc_med:
-        return "Medium", "Worth closer monitoring; corroborate with local intelligence."
-    return "Low", "No strong signal of unusually high modelled pressure; stay vigilant to new data."
-
-
 def _england_pressure_samples(idata: az.InferenceData) -> np.ndarray:
     """Mean pressure index across all ICBs — used for the England aggregate tab."""
     icbs = list(idata.attrs.get("icbs", []))
@@ -69,8 +53,7 @@ def _england_pressure_samples(idata: az.InferenceData) -> np.ndarray:
         idata.posterior["level"].shape[2],
         idata.posterior["level"].shape[3],
     )
-    season_f = idata.posterior["season_effects"].values.reshape(-1, 4)
-    # Mean level across ICBs per sample, plus current season effect
+    season_f = seasonal_effect_samples(idata)
     mean_level = level_f[:, -1, :].mean(axis=1)
     return (mean_level + season_f[:, season_now]).astype(float)
 
@@ -176,7 +159,7 @@ def _render_geography(
     lo, mid, hi      = credible_triplet(samples, credible_mass)
     cred_pct         = int(credible_mass * 100)
 
-    risk_label, risk_hint = _risk_band(
+    risk_label, risk_hint = risk_band(
         p_above_elevated, p_above_concern,
         pe_hi=pe_hi, pc_hi=pc_hi, pe_med=pe_med, pc_med=pc_med,
     )

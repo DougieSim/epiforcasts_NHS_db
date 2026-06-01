@@ -42,5 +42,5 @@ run-dashboard-fast = "epiforcasts-launch --app src/epiforcasts_nhs/dashboard/app
 run-dashboard-resilient = "epiforcasts-resilient --app full --preferred-port 8501 --max-port 8510 --fallback-on-any-failure"
 run-dashboard-fast-resilient = "epiforcasts-resilient --app fast --preferred-port 8501 --max-port 8510 --fallback-on-any-failure"
 evidence-cycle = "epiforcasts-evidence --run-inference-fast"
-run-full-pipeline = { cmd = "epiforcasts-generate && epiforcasts-inference --fast && epiforcasts-launch --preferred-port 8501 --max-port 8510", description = "Generate data, run inference, then launch dashboard" }
+run-full-pipeline = { cmd = "epiforcasts-seed && epiforcasts-inference --fast && epiforcasts-launch --preferred-port 8501 --max-port 8510", description = "Generate data, run inference, then launch dashboard" }
 dev = { cmd = "epiforcasts-generate && epiforcasts-daemon --once && epiforcasts-launch --app src/epiforcasts_nhs/dashboard/app_fast.py --preferred-port 8501 --max-port 8510", description = "Development setup: data + single inference + fast UI" }

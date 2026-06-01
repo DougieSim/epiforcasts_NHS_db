@@ -25,30 +25,15 @@ import arviz as az
 
 from epiforcasts_nhs.core.cache import CacheManager
 from epiforcasts_nhs.dashboard.utils import (
-    DEFAULT_RISK_ELEVATED_TIER_MIN_P_CONCERN,
-    DEFAULT_RISK_ELEVATED_TIER_MIN_P_HIGH,
-    DEFAULT_RISK_MEDIUM_TIER_MIN_P_CONCERN,
-    DEFAULT_RISK_MEDIUM_TIER_MIN_P_HIGH,
     THRESHOLD_BASELINE,
     THRESHOLD_CONCERN,
     THRESHOLD_ELEVATED,
     credible_triplet,
     pressure_index_samples,
+    risk_band,
 )
 
 POSTERIORS_NC = "posteriors.nc"
-
-
-def _risk_band_summary(
-    p_elevated: float,
-    p_concern: float,
-) -> tuple[str, str]:
-    """Simple risk classification."""
-    if p_elevated >= DEFAULT_RISK_ELEVATED_TIER_MIN_P_HIGH or p_concern >= DEFAULT_RISK_ELEVATED_TIER_MIN_P_CONCERN:
-        return "Elevated", "Prioritise review of capacity and escalation plans."
-    if p_elevated >= DEFAULT_RISK_MEDIUM_TIER_MIN_P_HIGH or p_concern >= DEFAULT_RISK_MEDIUM_TIER_MIN_P_CONCERN:
-        return "Medium", "Worth closer monitoring."
-    return "Low", "No strong signal of elevated pressure."
 
 
 def _plot_minimal(samples: np.ndarray) -> plt.Figure:
@@ -229,7 +214,7 @@ p_above_concern = float(np.mean(samples > THRESHOLD_CONCERN))
 p_above_elevated = float(np.mean(samples > THRESHOLD_ELEVATED))
 
 lo, mid, hi = credible_triplet(samples, 0.9)
-risk_label, risk_hint = _risk_band_summary(p_above_elevated, p_above_concern)
+risk_label, risk_hint = risk_band(p_above_elevated, p_above_concern)
 
 # Summary card
 with st.container(border=True):

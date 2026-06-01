@@ -23,6 +23,8 @@ from datetime import datetime, timedelta
 import numpy as np
 import arviz as az
 
+from epiforcasts_nhs.core.utils import current_pressure_samples as _extract_level_samples
+
 logger = logging.getLogger(__name__)
 
 
@@ -288,8 +290,7 @@ class CacheManager:
 
     @staticmethod
     def _extract_samples(idata: az.InferenceData, icb_idx: int) -> np.ndarray:
-        level = idata.posterior["level"].values  # (chains, draws, n_weeks, n_icb)
-        return level[:, :, -1, icb_idx].astype(float).ravel()
+        return _extract_level_samples(idata, icb_idx)
 
     def _list_cached_samples(self) -> list[Path]:
         """List all cached sample files."""

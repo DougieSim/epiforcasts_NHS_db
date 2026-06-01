@@ -1,8 +1,8 @@
 """
 Utility functions and constants for the Bayesian pressure model.
 
-Covers data preparation, encoding, season mapping, and clinical summary
-extraction from posteriors. Imported by core.model and dashboard modules.
+Covers data preparation, encoding, season mapping, latent-scale conversion,
+and clinical summary extraction from posteriors.
 """
 
 from __future__ import annotations
@@ -10,6 +10,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import arviz as az
+
+# ─────────────────────────────────────────
+# Latent ↔ occupancy scale
+# ─────────────────────────────────────────
+
+# Bed occupancy = LATENT_BASELINE + latent_pressure * LATENT_SCALE
+# At latent = 0 → 85% occupancy; one latent unit ≈ 6% occupancy.
+LATENT_BASELINE: float = 85.0
+LATENT_SCALE: float = 6.0
+
 
 # ─────────────────────────────────────────
 # Season constants
@@ -104,20 +114,23 @@ def check_season_alignment(enc: dict, df: pd.DataFrame) -> None:
         print(f"  Week {min_week + w}{date_str}: {SEASON_NAMES[s]}")
 
 
+def current_season_from_enc(enc: dict) -> int:
+    """Return the season index for the final week recorded in an encoding dict."""
+    last_week_pos = np.where(enc["week_idx"] == enc["week_idx"].max())[0][0]
+    return int(enc["season_idx"][last_week_pos])
+
+
 # ─────────────────────────────────────────
 # Posterior extraction
 # ─────────────────────────────────────────
 
-def current_pressure_samples(
-    idata: az.InferenceData,
-    icb_idx: int,
-) -> np.ndarray:
+def current_pressure_samples(idata: az.InferenceData, icb_idx: int) -> np.ndarray:
     """
     Posterior samples for the current underlying level of one ICB (ex-seasonal).
     Shape: (n_chains * n_draws,).
     """
     level = idata.posterior["level"].values  # (chains, draws, n_weeks, n_icb)
-    return level[:, :, -1, icb_idx].ravel()
+    return level[:, :, -1, icb_idx].astype(float).ravel()
 
 
 def current_total_pressure_samples(
@@ -132,7 +145,7 @@ def current_total_pressure_samples(
     ----------
     current_season : 0=Winter, 1=Spring, 2=Summer, 3=Autumn
     """
-    level          = idata.posterior["level"].values[:, :, -1, icb_idx].ravel()
+    level          = current_pressure_samples(idata, icb_idx)
     season_effects = idata.posterior["season_effects"].values.reshape(-1, 4)
     return level + season_effects[:, current_season]
 
@@ -144,8 +157,7 @@ def direction_of_travel(
 ) -> np.ndarray:
     """
     Posterior samples for change in underlying level over the last N weeks.
-    Positive = rising pressure. Seasonal component excluded so this reflects
-    genuine trend, not seasonal fluctuation.
+    Positive = rising pressure. Seasonal component excluded.
     """
     level    = idata.posterior["level"].values
     current  = level[:, :, -1, icb_idx].ravel()
@@ -176,7 +188,7 @@ def pressure_summary(
             pressure_median=float(np.median(level_samples)),
             pressure_lo=float(np.percentile(level_samples, 10)),
             pressure_hi=float(np.percentile(level_samples, 90)),
-            bed_occ_median=float(85 + np.median(total_samples) * 6),
+            bed_occ_median=float(LATENT_BASELINE + np.median(total_samples) * LATENT_SCALE),
             p_above_concern=float(np.mean(total_samples > 0.5)),
             p_above_high=float(np.mean(total_samples > 1.1)),
             dot_median=float(np.median(dot)),

@@ -45,15 +45,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DATA_PATH       = "synthetic_nhs_pressure.csv"
-POSTERIORS_PATH = "posteriors.nc"
-CACHE_DIR       = ".cache"
-
-
-# ─────────────────────────────────────────
-# Core pipeline steps
-# ─────────────────────────────────────────
-
 def step_generate(generator: SyntheticGenerator, df: pd.DataFrame) -> pd.DataFrame:
     """
     Generate one new synthetic week and append it to the CSV.
@@ -87,10 +78,10 @@ def step_inference(df: pd.DataFrame, fast: bool) -> bool:
         return False
 
 
-def step_warm_cache() -> bool:
+def step_warm_cache(posterior_path: Path, cache_path: Path) -> bool:
     """Warm the summary stats cache from the saved posteriors."""
     logger.info("Warming cache...")
-    cache = CacheManager(posteriors_path=POSTERIORS_PATH, cache_dir=CACHE_DIR)
+    cache = CacheManager(posteriors_path=posterior_path, cache_dir=cache_path)
     success = cache.warm_cache()
     if success:
         logger.info("Cache ready — dashboard will show updated pressures.")
@@ -99,13 +90,12 @@ def step_warm_cache() -> bool:
     return success
 
 
-# ─────────────────────────────────────────
-# Full run
-# ─────────────────────────────────────────
-
 def run_cycle(
     generator: SyntheticGenerator,
     *,
+    data_path: Path,
+    posterior_path: Path, 
+    cache_path: Path,
     fast: bool,
     generate: bool = True,
 ) -> bool:
@@ -124,7 +114,7 @@ def run_cycle(
     logger.info("─" * 60)
     logger.info(f"Starting cycle at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    df = pd.read_csv(DATA_PATH)
+    df = pd.read_csv(data_path)
     logger.info(f"Loaded {len(df)} rows "
                 f"(weeks {df['week'].min()}–{df['week'].max()})")
 
@@ -136,20 +126,13 @@ def run_cycle(
         logger.error("Cycle aborted — inference failed.")
         return False
 
-    ok = step_warm_cache()
+    ok = step_warm_cache(posterior_path, cache_path)
     elapsed = time.time() - cycle_start
     logger.info(f"Cycle complete in {elapsed:.1f}s")
     logger.info("─" * 60)
     return ok
 
-
-# ─────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────
-
 def main() -> int:
-    global DATA_PATH
-
     parser = argparse.ArgumentParser(
         description="NHS pressure model inference daemon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -183,14 +166,27 @@ def main() -> int:
     )
     parser.add_argument(
         "--data",
-        type=str,
-        default=DATA_PATH,
-        help=f"Path to weekly CSV (default: {DATA_PATH}).",
+        type=Path,
+        default=None,
+        help=f"Path to weekly CSV.",
+    )
+    parser.add_argument(
+        "--posterior-path",
+        type=Path,
+        default=Path("posteriors.nc"),
+        help=f"Path to saved posterior.nc",
+    )
+    parser.add_argument(
+        "--cache-path",
+        type=Path,
+        default=Path(".cache"),
+        help=f"Cache directory path.",
     )
     args = parser.parse_args()
 
     DATA_PATH = args.data
-
+    posterior_path = args.posterior_path
+    cache_path = args.cache_path
     generator = SyntheticGenerator(DATA_PATH)
 
     # ── Single-shot modes ─────────────────────────────────────────────
@@ -205,11 +201,11 @@ def main() -> int:
         df = pd.read_csv(DATA_PATH)
         ok = step_inference(df, fast=args.fast)
         if ok:
-            step_warm_cache()
+            step_warm_cache(posterior_path, cache_path)
         return 0 if ok else 1
 
     if args.once:
-        ok = run_cycle(generator, fast=args.fast, generate=True)
+        ok = run_cycle(generator, fast=args.fast, generate=True, data_path=DATA_PATH, posterior_path=posterior_path, cache_path=cache_path)
         return 0 if ok else 1
 
     # ── Continuous loop ───────────────────────────────────────────────
@@ -221,7 +217,8 @@ def main() -> int:
     )
 
     while True:
-        ok = run_cycle(generator, fast=args.fast, generate=True)
+        ok = run_cycle(generator, fast=args.fast, generate=True, data_path=DATA_PATH, posterior_path=posterior_path, cache_path=cache_path)
+
 
         if not ok:
             logger.warning("Cycle failed — will retry next interval.")
