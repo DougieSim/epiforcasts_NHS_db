@@ -2,7 +2,7 @@
 Append one Trust/ICB utility feedback entry with required linkage fields.
 
 Usage example:
-    python record_trust_feedback.py \
+    epiforcasts-feedback \
       --organisation-type Trust \
       --organisation-name "Example NHS Trust" \
       --session-type review \

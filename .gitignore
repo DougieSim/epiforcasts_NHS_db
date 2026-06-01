@@ -10,3 +10,4 @@ posteriors_metadata.nc
 
 # Local logs/runtime files
 inference_daemon.log
+*.cpython*

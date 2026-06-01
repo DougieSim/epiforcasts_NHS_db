@@ -6,8 +6,8 @@ execution if Pixi fails (for example due to environment-specific certificate
 or solver issues).
 
 Usage:
-    python run_dashboard_resilient.py --app app.py
-    python run_dashboard_resilient.py --app app_fast.py --preferred-port 8501
+    epiforcasts-resilient --app full
+    epiforcasts-resilient --app fast --preferred-port 8501
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ PIXICERT_HINTS = (
 
 
 def _pixi_task_for_app(app: str) -> str:
-    return "run-dashboard-fast" if Path(app).name == "app_fast.py" else "run-dashboard"
+    return "run-dashboard-fast" if app == "fast" else "run-dashboard"
 
 
 def _should_fallback(output: str) -> bool:
@@ -54,15 +54,11 @@ def _fallback_python() -> str:
 def _run_fallback(app: str, preferred_port: int, max_port: int, headless: str) -> int:
     cmd = [
         _fallback_python(),
-        "launch_streamlit.py",
-        "--app",
-        app,
-        "--preferred-port",
-        str(preferred_port),
-        "--max-port",
-        str(max_port),
-        "--headless",
-        headless,
+        "-m", "epiforcasts_nhs.cli.launch",
+        "--app", app,
+        "--preferred-port", str(preferred_port),
+        "--max-port", str(max_port),
+        "--headless", headless,
     ]
     print(f"[FALLBACK] Starting direct launcher: {' '.join(cmd)}")
     return subprocess.call(cmd)
@@ -70,7 +66,12 @@ def _run_fallback(app: str, preferred_port: int, max_port: int, headless: str) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run dashboard with Pixi-first fallback.")
-    parser.add_argument("--app", default="app.py", help="Dashboard app file (app.py or app_fast.py).")
+    parser.add_argument(
+        "--app",
+        choices=["full", "fast"],
+        default="full",
+        help="Dashboard variant: 'full' (default) or 'fast'.",
+    )
     parser.add_argument("--preferred-port", type=int, default=8501, help="Preferred starting port.")
     parser.add_argument("--max-port", type=int, default=8510, help="Maximum fallback port.")
     parser.add_argument(
@@ -102,8 +103,12 @@ def main() -> int:
 
     if args.fallback_on_any_failure or _should_fallback(combined_output):
         print("[INFO] Falling back to direct .venv/python launcher.")
+        # Resolve app path for the launch module
+        from pathlib import Path as _Path
+        pkg_root = _Path(__file__).parent.parent
+        app_path = str(pkg_root / "dashboard" / ("app_fast.py" if args.app == "fast" else "app.py"))
         return _run_fallback(
-            app=args.app,
+            app=app_path,
             preferred_port=args.preferred_port,
             max_port=args.max_port,
             headless=args.headless,

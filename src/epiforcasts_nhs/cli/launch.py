@@ -2,8 +2,8 @@
 Launch Streamlit with automatic port fallback.
 
 Usage:
-    python launch_streamlit.py --app app.py --preferred-port 8501
-    python launch_streamlit.py --app app_fast.py --preferred-port 8501
+    epiforcasts-launch --app src/epiforcasts_nhs/dashboard/app.py --preferred-port 8501
+    epiforcasts-launch --app src/epiforcasts_nhs/dashboard/app_fast.py --preferred-port 8501
 """
 
 from __future__ import annotations
@@ -12,6 +12,13 @@ import argparse
 import socket
 import subprocess
 import sys
+from pathlib import Path
+
+
+_PACKAGE_ROOT = Path(__file__).parent.parent  # src/epiforcasts_nhs/
+
+APP_FULL = str(_PACKAGE_ROOT / "dashboard" / "app.py")
+APP_FAST = str(_PACKAGE_ROOT / "dashboard" / "app_fast.py")
 
 
 def _is_port_free(port: int) -> bool:
@@ -32,7 +39,11 @@ def _pick_port(preferred: int, max_port: int) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch Streamlit with safe port fallback.")
-    parser.add_argument("--app", default="app.py", help="Streamlit app file to run.")
+    parser.add_argument(
+        "--app",
+        default=APP_FULL,
+        help="Streamlit app file to run (default: full dashboard).",
+    )
     parser.add_argument("--preferred-port", type=int, default=8501, help="Preferred starting port.")
     parser.add_argument("--max-port", type=int, default=8510, help="Maximum port to try.")
     parser.add_argument(

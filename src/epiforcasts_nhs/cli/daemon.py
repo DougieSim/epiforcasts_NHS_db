@@ -10,16 +10,16 @@ Every interval:
 Usage
 -----
 Run once (useful for initial setup or testing):
-    python inference_daemon.py --once
+    epiforcasts-daemon --once
 
 Run on a schedule (production):
-    python inference_daemon.py --interval-hours 1
+    epiforcasts-daemon --interval-hours 1
 
 Generate a week without running inference (debugging):
-    python inference_daemon.py --generate-only
+    epiforcasts-daemon --generate-only
 
 Fast sampling mode (development):
-    python inference_daemon.py --interval-hours 1 --fast
+    epiforcasts-daemon --interval-hours 1 --fast
 """
 
 from __future__ import annotations
@@ -34,9 +34,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bayesian_pressure_model import fit_pressure_model
-from cache_manager import CacheManager
-from synthetic_data_generator import SyntheticGenerator
+from epiforcasts_nhs.core.model import fit_pressure_model
+from epiforcasts_nhs.core.cache import CacheManager
+from epiforcasts_nhs.data.generate import SyntheticGenerator
 
 logging.basicConfig(
     level=logging.INFO,
