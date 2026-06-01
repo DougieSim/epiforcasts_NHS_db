@@ -30,17 +30,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from epiforcasts_nhs.data.generator import ICBS, build_weekly_icb_frame
-from epiforcasts_nhs.data.utils import (
-    BED_OCC_INTERCEPT,
-    BED_OCC_LP_SCALE,
-    BED_OCC_SEA_SCALE,
-    LP_RANDOM_WALK_SD,
-    SEASONAL_AMPLITUDE,
-    SEASONAL_PEAK_WEEK,
-    WEEKS_PER_YEAR,
-    england_aggregate,
-)
+import epiforcasts_nhs.data.constants as constants
+from epiforcasts_nhs.data.generator import build_weekly_icb_frame
+from epiforcasts_nhs.data.utils import england_aggregate
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +75,7 @@ class SyntheticGenerator:
         new_week = int(icb_rows["week"].max()) + 1
 
         parts: list[pd.DataFrame] = []
-        for icb, scale in ICBS.items():
+        for icb, scale in constants.ICBS.items():
             last_row = icb_rows[icb_rows["icb"] == icb].sort_values("week").iloc[-1]
             lp_next  = self._next_lp(last_row, new_week)
             new_icb_df = build_weekly_icb_frame(
@@ -98,7 +90,7 @@ class SyntheticGenerator:
         england_row = england_aggregate(new_icb_df)
 
         result = pd.concat([new_icb_df, england_row], ignore_index=True)
-        logger.info(f"Generated week {new_week} for {len(ICBS)} ICBs + England")
+        logger.info(f"Generated week {new_week} for {len(constants.ICBS)} ICBs + England")
         return result
 
     def append_and_save(
@@ -139,10 +131,11 @@ class SyntheticGenerator:
         then advances the random walk by one step:
             lp_new = lp_estimated + N(0, 0.12)
         """
+        s            = constants.SEASONAL
         last_week    = int(last_row["week"])
-        seasonal     = SEASONAL_AMPLITUDE * np.cos(2 * np.pi * (last_week - SEASONAL_PEAK_WEEK) / WEEKS_PER_YEAR)
-        lp_estimated = (last_row["bed_occupancy"] - BED_OCC_INTERCEPT - seasonal * BED_OCC_SEA_SCALE) / BED_OCC_LP_SCALE
-        return float(lp_estimated + self.rng.normal(0, LP_RANDOM_WALK_SD))
+        seasonal     = s.amplitude * np.cos(2 * np.pi * (last_week - s.peak_week) / s.weeks_per_year)
+        lp_estimated = (last_row["bed_occupancy"] - constants.BED_OCC.intercept - seasonal * constants.BED_OCC.sea_scale) / constants.BED_OCC.lp_scale
+        return float(lp_estimated + self.rng.normal(0, constants.LATENT_PROCESS.random_walk_sd))
 
 
 # ─────────────────────────────────────────
