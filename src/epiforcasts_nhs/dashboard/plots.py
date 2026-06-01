@@ -21,10 +21,24 @@ import arviz as az
 from epiforcasts_nhs.core.utils import (
     LATENT_BASELINE,
     LATENT_SCALE,
+    LOOKBACK_WEEKS,
     MONTH_TO_SEASON,
+    THRESHOLD_BASELINE,
+    THRESHOLD_CONCERN,
+    THRESHOLD_ELEVATED,
     direction_of_travel,
 )
 from epiforcasts_nhs.dashboard.utils import (
+    BED_OCC_REF_CONCERN,
+    BED_OCC_REF_HIGH,
+    CI_80_LOWER,
+    CI_80_UPPER,
+    CI_89_LOWER,
+    CI_89_UPPER,
+    KALMAN_CI_Z_90,
+    RISK_THRESHOLD_HIGH,
+    RISK_THRESHOLD_MEDIUM,
+    SEASON_COLORS,
     SEASON_NAMES,
     credible_triplet,
     current_season_index,
@@ -35,6 +49,9 @@ from epiforcasts_nhs.dashboard.utils import (
     season_per_week_samples,
     week_season_map,
 )
+
+# Max prior/posterior samples to overlay in diagnostic plots
+_MAX_OVERLAY_SAMPLES = 100
 
 
 # ─────────────────────────────────────────
@@ -48,11 +65,11 @@ def plot_prior_predictive(idata: az.InferenceData) -> None:
           f"Range: [{flat.min():.1f}, {flat.max():.1f}]")
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    for i in range(min(100, prior_beds.shape[0])):
+    for i in range(min(_MAX_OVERLAY_SAMPLES, prior_beds.shape[0])):
         ax.hist(prior_beds[i], bins=30, alpha=0.05, color="steelblue", density=True)
-    ax.axvline(prior_beds.mean(), color="red",   linewidth=2, label="Mean")
+    ax.axvline(prior_beds.mean(), color="red",   linewidth=2,    label="Mean")
     ax.axvline(LATENT_BASELINE,  color="black",  linestyle="--", label=f"Baseline ({LATENT_BASELINE:.0f}%)")
-    ax.axvline(100,              color="orange", linestyle="--", label="Max (100%)")
+    ax.axvline(BED_OCC_REF_HIGH, color="orange", linestyle="--", label=f"Max ({BED_OCC_REF_HIGH:.0f}%)")
     ax.set_xlabel("Bed occupancy (%)")
     ax.set_title("Prior predictive check")
     ax.legend()
@@ -63,7 +80,7 @@ def plot_prior_predictive(idata: az.InferenceData) -> None:
 def plot_posterior_predictive(idata: az.InferenceData, observed: np.ndarray) -> None:
     post_beds = idata.posterior_predictive["bed_obs"].values.squeeze().reshape(-1, len(observed))
     fig, ax   = plt.subplots(figsize=(8, 4))
-    for i in range(min(100, post_beds.shape[0])):
+    for i in range(min(_MAX_OVERLAY_SAMPLES, post_beds.shape[0])):
         ax.hist(post_beds[i], bins=40, alpha=0.05, color="steelblue", density=True)
     ax.hist(observed, bins=40, alpha=0.8, color="red", density=True,
             histtype="step", linewidth=2, label="Observed")
@@ -89,11 +106,10 @@ def plot_residuals(idata: az.InferenceData, observed: np.ndarray) -> None:
 
 def plot_seasonal_effects(idata: az.InferenceData) -> None:
     effects = seasonal_effect_samples(idata) * LATENT_SCALE
-    colors  = ["#378ADD", "#1D9E75", "#EF9F27", "#D85A30"]
     fig, ax = plt.subplots(figsize=(9, 4))
-    for i, (name, color) in enumerate(zip(SEASON_NAMES, colors)):
+    for i, (name, color) in enumerate(zip(SEASON_NAMES, SEASON_COLORS)):
         samples     = effects[:, i]
-        lo, mid, hi = np.percentile(samples, [5.5, 50, 94.5])
+        lo, mid, hi = np.percentile(samples, [CI_89_LOWER, 50.0, CI_89_UPPER])
         ax.barh(i, mid, xerr=[[mid - lo], [hi - mid]], color=color, alpha=0.75, height=0.5, capsize=4)
         ax.text(mid + (0.05 if mid >= 0 else -0.05), i, f"  {mid:+.1f}%", va="center",
                 fontsize=10, ha="left" if mid >= 0 else "right")
@@ -122,9 +138,9 @@ def plot_pressure_trajectories(idata: az.InferenceData, enc: dict, df: pd.DataFr
 
     for i, (ax, icb_name) in enumerate(zip(axes, enc["categories"])):
         total = level_f[:, :, i] + season_per_week
-        lo    = np.percentile(total, 10, axis=0)
-        mid   = np.percentile(total, 50, axis=0)
-        hi    = np.percentile(total, 90, axis=0)
+        lo    = np.percentile(total, CI_80_LOWER, axis=0)
+        mid   = np.percentile(total, 50.0,        axis=0)
+        hi    = np.percentile(total, CI_80_UPPER,  axis=0)
         ax.fill_between(weeks,
                         LATENT_BASELINE + lo * LATENT_SCALE,
                         LATENT_BASELINE + hi * LATENT_SCALE,
@@ -133,8 +149,8 @@ def plot_pressure_trajectories(idata: az.InferenceData, enc: dict, df: pd.DataFr
                 color="steelblue", linewidth=1.5, label="Fitted median")
         obs = df[df["icb"] == icb_name]
         ax.scatter(obs["week"], obs["bed_occupancy"], s=6, color="black", alpha=0.4, label="Observed", zorder=3)
-        ax.axhline(95, color="orange", linestyle="--", linewidth=1, alpha=0.7)
-        ax.axhline(100, color="red", linestyle="--", linewidth=1, alpha=0.7)
+        ax.axhline(BED_OCC_REF_CONCERN, color="orange", linestyle="--", linewidth=1, alpha=0.7)
+        ax.axhline(BED_OCC_REF_HIGH,    color="red",    linestyle="--", linewidth=1, alpha=0.7)
         ax.set_ylabel("Bed occupancy (%)"); ax.set_title(icb_name)
         ax.legend(fontsize=7, loc="upper left")
 
@@ -144,7 +160,7 @@ def plot_pressure_trajectories(idata: az.InferenceData, enc: dict, df: pd.DataFr
     plt.show()
 
 
-def plot_direction_of_travel(idata: az.InferenceData, enc: dict, lookback_weeks: int = 4) -> None:
+def plot_direction_of_travel(idata: az.InferenceData, enc: dict, lookback_weeks: int = LOOKBACK_WEEKS) -> None:
     fig, ax = plt.subplots(figsize=(10, 4))
     for i, icb_name in enumerate(enc["categories"]):
         dot = direction_of_travel(idata, i, lookback_weeks)
@@ -170,21 +186,20 @@ def plot_clinical_summary(summary: pd.DataFrame) -> None:
         (LATENT_BASELINE + summary["pressure_hi"] * LATENT_SCALE) - summary["bed_occ_median"],
     ])
     ax.barh(y, summary["bed_occ_median"], xerr=xerr, color=colors, alpha=0.75, height=0.6, capsize=3)
-    ax.axvline(95, color="orange", linestyle="--", linewidth=1)
-    ax.axvline(100, color="red", linestyle="--", linewidth=1)
+    ax.axvline(BED_OCC_REF_CONCERN, color="orange", linestyle="--", linewidth=1)
+    ax.axvline(BED_OCC_REF_HIGH,    color="red",    linestyle="--", linewidth=1)
     ax.set_yticks(y); ax.set_yticklabels(icbs, fontsize=9)
     ax.set_xlabel("Bed occupancy % (median + 80% CI)"); ax.set_title("Current pressure (incl. season)")
 
     ax = axes[1]
     ax.barh(y, summary["p_above_high"], color=colors, alpha=0.75, height=0.6)
-    ax.axvline(0.25, color="red", linestyle="--", linewidth=1, label="Elevated (0.25)")
-    ax.axvline(0.08, color="orange", linestyle="--", linewidth=1, label="Medium (0.08)")
+    ax.axvline(RISK_THRESHOLD_HIGH,   color="red",    linestyle="--", linewidth=1, label=f"Elevated ({RISK_THRESHOLD_HIGH})")
+    ax.axvline(RISK_THRESHOLD_MEDIUM, color="orange", linestyle="--", linewidth=1, label=f"Medium ({RISK_THRESHOLD_MEDIUM})")
     ax.set_yticks(y); ax.set_yticklabels([""] * len(icbs))
     ax.set_xlabel("P(pressure above high reference)"); ax.set_title("Risk probability")
     ax.legend(fontsize=7)
 
     ax = axes[2]
-    # dot_median is on the latent scale; multiply by LATENT_SCALE for % occupancy
     dot_pct = [d * LATENT_SCALE for d in summary["dot_median"]]
     ax.barh(y, dot_pct, color=dot_travel_colors(dot_pct), alpha=0.75, height=0.6)
     ax.axvline(0, color="black", linewidth=1)
@@ -205,9 +220,6 @@ def fig_pressure_question(
     *,
     credible_mass: float,
     show_median_line: bool,
-    threshold_baseline: float = 0.0,
-    threshold_concern: float  = 0.5,
-    threshold_elevated: float = 1.1,
 ) -> plt.Figure:
     lo, mid, hi = credible_triplet(samples, credible_mass)
     pct_label   = f"{int(credible_mass * 100)}% plausible range"
@@ -215,16 +227,17 @@ def fig_pressure_question(
     fig, ax = plt.subplots(figsize=(10, 4.2), layout="constrained")
     ax.hist(samples, bins=40, density=True, alpha=0.78, color="#1d4ed8", edgecolor="white", linewidth=0.5)
     ax.axvspan(lo, hi, alpha=0.15, color="#1e3a8a", label=pct_label)
-    ax.axvline(threshold_baseline, color="#64748b", linestyle="--", linewidth=1.5, label="Baseline reference (demo)")
-    ax.axvline(threshold_concern,  color="#d97706", linestyle="--", linewidth=1.5, label="Concern reference (demo)")
-    ax.axvline(threshold_elevated, color="#b91c1c", linestyle="--", linewidth=1.5, label="High pressure reference (demo)")
+    ax.axvline(THRESHOLD_BASELINE, color="#64748b", linestyle="--", linewidth=1.5, label="Baseline reference (demo)")
+    ax.axvline(THRESHOLD_CONCERN,  color="#d97706", linestyle="--", linewidth=1.5, label="Concern reference (demo)")
+    ax.axvline(THRESHOLD_ELEVATED, color="#b91c1c", linestyle="--", linewidth=1.5, label="High pressure reference (demo)")
     if show_median_line:
         ax.axvline(mid, color="#0f172a", linestyle="-", linewidth=1.0, alpha=0.85, label="Median")
 
     ax.set_xlabel("System pressure index (modelled, unitless — not an NHS operational metric)")
     ax.set_ylabel("Relative plausibility")
     ax.set_title("Where does the evidence put system pressure for this area?", fontsize=13, pad=10)
-    ax.set_xlim(min(samples.min(), threshold_baseline) - 0.35, max(samples.max(), threshold_elevated) + 0.35)
+    ax.set_xlim(min(samples.min(), THRESHOLD_BASELINE) - 0.35,
+                max(samples.max(), THRESHOLD_ELEVATED) + 0.35)
     ax.legend(loc="upper right", fontsize=8, framealpha=0.92)
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
     return fig
@@ -261,16 +274,19 @@ def fig_pressure_trajectory(idata: az.InferenceData, df: pd.DataFrame, icb: str)
         season_week = np.array([season_mean[int(i % 4)] for i in range(n_weeks)])
 
     occ_mean = LATENT_BASELINE + (filtered_mean + season_week) * LATENT_SCALE
-    occ_lo   = LATENT_BASELINE + (filtered_mean - 1.645 * filtered_std + season_week) * LATENT_SCALE
-    occ_hi   = LATENT_BASELINE + (filtered_mean + 1.645 * filtered_std + season_week) * LATENT_SCALE
+    occ_lo   = LATENT_BASELINE + (filtered_mean - KALMAN_CI_Z_90 * filtered_std + season_week) * LATENT_SCALE
+    occ_hi   = LATENT_BASELINE + (filtered_mean + KALMAN_CI_Z_90 * filtered_std + season_week) * LATENT_SCALE
 
     fig, ax = plt.subplots(figsize=(11, 3.5), layout="constrained")
     ax.fill_between(weeks, occ_lo, occ_hi, alpha=0.25, color="#1d4ed8", label="90% filtered CI")
     ax.plot(weeks, occ_mean, color="#1d4ed8", linewidth=1.8, label="Filtered estimate (incl. season)")
     ax.scatter(weeks, obs_beds, s=8, color="#0f172a", alpha=0.45, label="Observed", zorder=3)
-    ax.axhline(95,  color="#d97706", linestyle="--", linewidth=1, alpha=0.8, label="95% reference")
-    ax.axhline(100, color="#b91c1c", linestyle="--", linewidth=1, alpha=0.8, label="100% reference")
-    ax.axvline(weeks[-1], color="#64748b", linestyle=":", linewidth=1.2, alpha=0.8, label=f"Latest (week {weeks[-1]})")
+    ax.axhline(BED_OCC_REF_CONCERN, color="#d97706", linestyle="--", linewidth=1, alpha=0.8,
+               label=f"{BED_OCC_REF_CONCERN:.0f}% reference")
+    ax.axhline(BED_OCC_REF_HIGH, color="#b91c1c", linestyle="--", linewidth=1, alpha=0.8,
+               label=f"{BED_OCC_REF_HIGH:.0f}% reference")
+    ax.axvline(weeks[-1], color="#64748b", linestyle=":", linewidth=1.2, alpha=0.8,
+               label=f"Latest (week {weeks[-1]})")
     ax.set_ylabel("Bed occupancy (%)"); ax.set_xlabel("Week")
     ax.set_title(
         f"Filtered pressure trajectory — {icb}  "
@@ -283,12 +299,10 @@ def fig_pressure_trajectory(idata: az.InferenceData, df: pd.DataFrame, icb: str)
 
 def fig_seasonal_effects(idata: az.InferenceData) -> plt.Figure:
     effects = seasonal_effect_samples(idata) * LATENT_SCALE
-    colors  = ["#378ADD", "#1D9E75", "#EF9F27", "#D85A30"]
-
     fig, ax = plt.subplots(figsize=(9, 3.5), layout="constrained")
-    for i, (name, color) in enumerate(zip(SEASON_NAMES, colors)):
+    for i, (name, color) in enumerate(zip(SEASON_NAMES, SEASON_COLORS)):
         samples     = effects[:, i]
-        lo, mid, hi = np.percentile(samples, [5.5, 50, 94.5])
+        lo, mid, hi = np.percentile(samples, [CI_89_LOWER, 50.0, CI_89_UPPER])
         ax.barh(i, mid, xerr=[[mid - lo], [hi - mid]], color=color, alpha=0.75, height=0.5, capsize=4)
         ax.text(mid + (0.05 if mid >= 0 else -0.05), i, f"  {mid:+.1f}%", va="center",
                 fontsize=10, ha="left" if mid >= 0 else "right")
@@ -315,14 +329,13 @@ def fig_clinical_summary(idata: az.InferenceData, icb_filter: str | None = None)
             continue
         lev   = level_f[:, -1, i]
         total = lev + season_f[:, season_now]
-        # dot is already in % occupancy (multiplied by LATENT_SCALE)
-        dot   = (level_f[:, -1, i] - level_f[:, -4, i]) * LATENT_SCALE
+        dot   = (level_f[:, -1, i] - level_f[:, -LOOKBACK_WEEKS, i]) * LATENT_SCALE
         rows.append(dict(
             icb=icb_name,
             median=float(LATENT_BASELINE + np.median(total) * LATENT_SCALE),
-            lo=float(LATENT_BASELINE + np.percentile(lev, 10) * LATENT_SCALE),
-            hi=float(LATENT_BASELINE + np.percentile(lev, 90) * LATENT_SCALE),
-            p_high=float(np.mean(total > 1.1)),
+            lo=float(LATENT_BASELINE + np.percentile(lev, CI_80_LOWER) * LATENT_SCALE),
+            hi=float(LATENT_BASELINE + np.percentile(lev, CI_80_UPPER) * LATENT_SCALE),
+            p_high=float(np.mean(total > THRESHOLD_ELEVATED)),
             dot=float(np.median(dot)),
         ))
 
@@ -338,16 +351,16 @@ def fig_clinical_summary(idata: az.InferenceData, icb_filter: str | None = None)
     ax = axes[0]
     xerr = np.array([summary["median"] - summary["lo"], summary["hi"] - summary["median"]])
     ax.barh(y, summary["median"], xerr=xerr, color=colors, alpha=0.75, height=0.6, capsize=3)
-    ax.axvline(95,  color="#d97706", linestyle="--", linewidth=1)
-    ax.axvline(100, color="#b91c1c", linestyle="--", linewidth=1)
+    ax.axvline(BED_OCC_REF_CONCERN, color="#d97706", linestyle="--", linewidth=1)
+    ax.axvline(BED_OCC_REF_HIGH,    color="#b91c1c", linestyle="--", linewidth=1)
     ax.set_yticks(y); ax.set_yticklabels(short_names, fontsize=9)
     ax.set_xlabel("Bed occupancy % (median + 80% CI)"); ax.set_title("Current pressure (incl. season)")
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
 
     ax = axes[1]
     ax.barh(y, summary["p_high"], color=colors, alpha=0.75, height=0.6)
-    ax.axvline(0.25, color="#b91c1c", linestyle="--", linewidth=1, label="Elevated")
-    ax.axvline(0.08, color="#d97706", linestyle="--", linewidth=1, label="Medium")
+    ax.axvline(RISK_THRESHOLD_HIGH,   color="#b91c1c", linestyle="--", linewidth=1, label="Elevated")
+    ax.axvline(RISK_THRESHOLD_MEDIUM, color="#d97706", linestyle="--", linewidth=1, label="Medium")
     ax.set_yticks(y); ax.set_yticklabels([""] * n_rows)
     ax.set_xlabel("P(pressure above high reference)"); ax.set_title("Risk probability")
     ax.legend(fontsize=7)
@@ -361,3 +374,5 @@ def fig_clinical_summary(idata: az.InferenceData, icb_filter: str | None = None)
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
 
     return fig
+
+

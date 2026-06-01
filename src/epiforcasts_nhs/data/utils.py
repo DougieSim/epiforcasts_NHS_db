@@ -56,6 +56,29 @@ COUNT_COLS: frozenset[str] = frozenset({
 
 MEASUREMENT_NOISE_SCALE = 0.025
 
+# ─────────────────────────────────────────
+# Data-generating process (DGP) parameters
+# ─────────────────────────────────────────
+# These define the synthetic bed-occupancy formula and latent dynamics.
+# Both generator.py (bulk creation) and generate.py (week-by-week extension)
+# must use these values so the two generation paths stay consistent.
+
+# Bed-occupancy formula: bed_occ = BED_OCC_INTERCEPT + lp * BED_OCC_LP_SCALE
+#                                  + seasonal * BED_OCC_SEA_SCALE + N(0, 3)
+# Note: the Bayesian model in core.model uses LATENT_BASELINE=85 / LATENT_SCALE=6,
+# which intentionally differ from the DGP — model misspecification is realistic.
+BED_OCC_INTERCEPT:  float = 84.0
+BED_OCC_LP_SCALE:   float = 7.0
+BED_OCC_SEA_SCALE:  float = 4.0
+
+# Seasonal pattern: amplitude * cos(2π(t - peak_week) / weeks_per_year)
+SEASONAL_AMPLITUDE: float = 0.15
+SEASONAL_PEAK_WEEK: int   = 6       # mid-February peak matches real NHS winter pressure
+WEEKS_PER_YEAR:     int   = 52
+
+# Latent random-walk standard deviation (weekly innovation size)
+LP_RANDOM_WALK_SD:  float = 0.12
+
 
 # ─────────────────────────────────────────
 # RNG helpers
@@ -70,7 +93,7 @@ def rng_for_icb(icb: str) -> np.random.Generator:
 
 def latent_series(rng: np.random.Generator, scale: float, n_weeks: int) -> np.ndarray:
     """Random-walk latent pressure shared across indicators for one ICB."""
-    return np.cumsum(rng.normal(0, 0.12, n_weeks)) + scale
+    return np.cumsum(rng.normal(0, LP_RANDOM_WALK_SD, n_weeks)) + scale
 
 
 def round_counts(rng: np.random.Generator, x: np.ndarray) -> np.ndarray:
@@ -107,6 +130,7 @@ def episode_id(icb: str, week: int, seq: int) -> str:
     """Stable synthetic episode identifier."""
     raw = f"{SYNTHETIC_DGP_VERSION}|{icb}|{week}|{seq}".encode()
     return "SYN-" + hashlib.sha256(raw).hexdigest()[:16]
+
 
 
 def england_aggregate(icb_weekly: pd.DataFrame) -> pd.DataFrame:

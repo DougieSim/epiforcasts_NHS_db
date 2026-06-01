@@ -1,15 +1,10 @@
 """
 CLI entry point — offline Bayesian inference.
 
-Parses arguments and delegates entirely to core.inference.
-All model fitting and persistence logic lives there.
+Parses arguments and delegates to core.inference.
 
 Usage:
     epiforcasts-inference [--data-path FILE] [--output-path FILE] [--fast | --full]
-    epiforcasts-inference --seed 123 --advi-steps 5000
-
-Environment:
-    PRESSURE_MODEL_ADVI_STEPS  default ADVI step count (overridden by --advi-steps)
 """
 
 from __future__ import annotations
@@ -21,6 +16,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from epiforcasts_nhs.config import (
+    DEFAULT_ADVI_STEPS,
+    DEFAULT_RANDOM_SEED,
+    POSTERIORS_PATH,
+    WEEKLY_CSV,
+)
 from epiforcasts_nhs.core.inference import fit_pressure_model, save_posterior_summaries
 
 
@@ -28,27 +29,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run offline Bayesian inference on the pressure model."
     )
-    parser.add_argument(
-        "--data-path",
-        type=Path,
-        default=Path("synthetic_nhs_pressure.csv"),
-        help="Path to input CSV (default: synthetic_nhs_pressure.csv).",
-    )
-    parser.add_argument(
-        "--output-path",
-        type=Path,
-        default=Path("posteriors.nc"),
-        help="Path for output NetCDF file (default: posteriors.nc).",
-    )
+    parser.add_argument("--data-path",   type=Path, default=WEEKLY_CSV)
+    parser.add_argument("--output-path", type=Path, default=POSTERIORS_PATH)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--fast", action="store_true", help="ADVI fast path (default).")
     mode.add_argument("--full", action="store_true", help="NUTS with retries / ADVI fallback.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--seed",       type=int, default=DEFAULT_RANDOM_SEED)
     parser.add_argument(
         "--advi-steps",
         type=int,
-        default=int(os.environ.get("PRESSURE_MODEL_ADVI_STEPS", "20000")),
-        help="ADVI optimisation steps.",
+        default=int(os.environ.get("PRESSURE_MODEL_ADVI_STEPS", str(DEFAULT_ADVI_STEPS))),
     )
     args = parser.parse_args()
 

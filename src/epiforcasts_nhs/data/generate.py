@@ -1,19 +1,23 @@
 """
 Ongoing synthetic data generation — appends new weeks at a configurable interval.
 
-Uses per-ICB AR(1) dynamics fitted on the existing dataset so each new week is
-a plausible continuation of the observed time series.
+Extends the existing panel by estimating the latent pressure state from the
+last observed bed-occupancy row, advancing it one random-walk step, then
+delegating to build_weekly_icb_frame for the full set of correlated indicators.
+
+This keeps the correlation structure between all variables consistent with
+the initial dataset — every metric is driven by the same shared latent lp.
 
 Usage (CLI):
-    epiforcasts-generate              # generate one new week
-    epiforcasts-generate --weeks 4    # generate four new weeks
+    epiforcasts-generate              # append one new week
+    epiforcasts-generate --weeks 4    # append four new weeks
 
 Usage (library):
     from epiforcasts_nhs.data.generate import SyntheticGenerator
 
     gen = SyntheticGenerator("synthetic_nhs_pressure.csv")
-    new_df = gen.generate_next_week()
-    gen.append_and_save(new_df)
+    new_df = gen.generate_next_week(df)
+    gen.append_and_save(new_df, df=df)
 """
 
 from __future__ import annotations
@@ -21,56 +25,35 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from epiforcasts_nhs.data.utils import START_DATE
+from epiforcasts_nhs.data.generator import ICBS, build_weekly_icb_frame
+from epiforcasts_nhs.data.utils import (
+    BED_OCC_INTERCEPT,
+    BED_OCC_LP_SCALE,
+    BED_OCC_SEA_SCALE,
+    LP_RANDOM_WALK_SD,
+    SEASONAL_AMPLITUDE,
+    SEASONAL_PEAK_WEEK,
+    WEEKS_PER_YEAR,
+    england_aggregate,
+)
 
 logger = logging.getLogger(__name__)
-
-# Columns produced by the generator for every new week
-NUMERIC_COLS = [
-    "bed_occupancy",
-    "dtoc_patients",
-    "ae_type1_attendances",
-    "ed_4hr_breach_count",
-    "ambulance_category_red_calls",
-    "elective_admissions",
-    "elective_cancellations",
-    "acute_admissions_nonelective",
-    "total_discharges",
-    "staff_absence_rate_pct",
-    "critical_care_occupancy_pct",
-    "mental_health_inpatient_beds_occ_pct",
-    "delayed_transfers_ge_21_days",
-    "mean_los_acute_days",
-    "resp_111_calls",
-    "ooh_primary_care_contacts",
-    "community_crisis_team_contacts",
-    "gp_same_day_booking_rate_pct",
-    "nhs_111_online_assessments_completed",
-    "social_care_package_delays_new",
-    "infection_isolation_beds_occupied",
-]
-
-# Values clipped to [historical_min / BOUND_FACTOR, historical_max * BOUND_FACTOR]
-# to prevent drift outside plausible NHS ranges over many generated weeks.
-BOUND_FACTOR = 1.25
 
 
 class SyntheticGenerator:
     """
-    Appends new synthetic weeks as AR(1) continuations of existing panel data.
+    Appends new synthetic weeks by extending the existing latent pressure path.
 
-    For each ICB and variable, fits:
-        x[t] = mu + rho * (x[t-1] - mu) + N(0, sigma)
-
-    where mu is the per-ICB historical mean and rho/sigma are estimated from
-    the per-ICB time series, producing mean-reverting dynamics that stay within
-    plausible ranges over long runs.
+    For each ICB, the latent pressure of the last observed week is estimated
+    by inverting the bed-occupancy formula, one random-walk step is added,
+    and build_weekly_icb_frame generates the full row of correlated indicators
+    from that single lp value — preserving the same distributional structure
+    as the initial dataset.
     """
 
     def __init__(
@@ -79,121 +62,44 @@ class SyntheticGenerator:
         rng: np.random.Generator | None = None,
     ) -> None:
         self.csv_path = Path(csv_path)
-        self.rng = rng or np.random.default_rng()
-        self._params: dict | None = None
-        self._bounds: dict | None = None
-
-    # ─────────────────────────────────────────
-    # Fitting
-    # ─────────────────────────────────────────
-
-    def fit(self, df: pd.DataFrame) -> None:
-        """Fit per-ICB AR(1) parameters on the full dataset."""
-        icbs = df[df["icb"] != "England"]["icb"].unique()
-        self._params = {}
-        self._bounds = {}
-
-        for icb in icbs:
-            icb_df = df[df["icb"] == icb].sort_values("week")
-            self._params[icb] = {}
-            self._bounds[icb] = {}
-
-            for col in NUMERIC_COLS:
-                if col not in icb_df.columns:
-                    continue
-
-                series = icb_df[col].values.astype(float)
-                mu = float(series.mean())
-                diffs = series[1:] - series[:-1]
-                sigma = float(np.std(diffs)) if len(diffs) > 1 else 1.0
-
-                if len(series) > 2:
-                    x_lag = series[:-1] - mu
-                    x_next = series[1:] - mu
-                    denom = float(np.dot(x_lag, x_lag))
-                    rho = float(np.clip(np.dot(x_lag, x_next) / denom if denom > 0 else 0.0, -0.98, 0.98))
-                else:
-                    rho = 0.5
-
-                self._params[icb][col] = dict(mu=mu, rho=rho, sigma=sigma, last=float(series[-1]))
-                self._bounds[icb][col] = dict(
-                    lo=float(series.min()) / BOUND_FACTOR,
-                    hi=float(series.max()) * BOUND_FACTOR,
-                )
-
-        logger.info(f"Fitted AR(1) params for {len(icbs)} ICBs x {len(NUMERIC_COLS)} variables")
-
-    # ─────────────────────────────────────────
-    # Generation
-    # ─────────────────────────────────────────
+        self.rng      = rng or np.random.default_rng()
 
     def generate_next_week(self, df: pd.DataFrame | None = None) -> pd.DataFrame:
         """
-        Generate one new week for all ICBs.
+        Generate one new week for all ICBs and the England aggregate.
 
         Parameters
         ----------
-        df : pd.DataFrame, optional
-            Full dataset. If None, reads from self.csv_path.
+        df : Full panel DataFrame.  If None, reads from self.csv_path.
 
         Returns
         -------
-        pd.DataFrame with one row per ICB + England aggregate for the new week.
+        pd.DataFrame with one row per ICB + England for the new week.
         """
         if df is None:
             df = pd.read_csv(self.csv_path)
-        if self._params is None:
-            self.fit(df)
 
         icb_rows = df[df["icb"] != "England"]
         new_week = int(icb_rows["week"].max()) + 1
-        new_week_date = START_DATE + timedelta(weeks=new_week)
-        new_month = new_week_date.month
 
-        last_rows = icb_rows.sort_values("week").groupby("icb").last().reset_index()
+        parts: list[pd.DataFrame] = []
+        for icb, scale in ICBS.items():
+            last_row = icb_rows[icb_rows["icb"] == icb].sort_values("week").iloc[-1]
+            lp_next  = self._next_lp(last_row, new_week)
+            new_icb_df = build_weekly_icb_frame(
+                icb, scale, self.rng,
+                n_weeks=1,
+                lp=np.array([lp_next]),
+                t_offset=new_week,
+            )
+            parts.append(new_icb_df)
 
-        rows = []
-        for _, last_row in last_rows.iterrows():
-            icb = last_row["icb"]
-            icb_p = self._params[icb]
-            icb_b = self._bounds[icb]
-            new_row: dict = {
-                "week": new_week,
-                "week_date": new_week_date.isoformat(),
-                "month": new_month,
-                "icb": icb,
-            }
+        new_icb_df  = pd.concat(parts, ignore_index=True)
+        england_row = england_aggregate(new_icb_df)
 
-            for col in NUMERIC_COLS:
-                if col not in icb_p:
-                    new_row[col] = float(last_row.get(col, 0))
-                    continue
-                p = icb_p[col]
-                b = icb_b[col]
-                raw = p["mu"] + p["rho"] * (float(last_row[col]) - p["mu"]) + self.rng.normal(0, p["sigma"])
-                new_row[col] = float(np.clip(raw, b["lo"], b["hi"]))
-                p["last"] = new_row[col]
-
-            for col in ["synthetic_dgp_version", "winter_pressure_index_demo"]:
-                if col in last_row.index:
-                    new_row[col] = last_row[col]
-
-            rows.append(new_row)
-
-        new_df = pd.DataFrame(rows)
-        england: dict = {"week": new_week, "week_date": new_week_date.isoformat(), "month": new_month, "icb": "England"}
-        for col in NUMERIC_COLS:
-            if col in new_df.columns:
-                england[col] = float(new_df[col].mean())
-        rows.append(england)
-
-        result = pd.DataFrame(rows)
-        logger.info(f"Generated week {new_week} for {len(rows) - 1} ICBs + England")
+        result = pd.concat([new_icb_df, england_row], ignore_index=True)
+        logger.info(f"Generated week {new_week} for {len(ICBS)} ICBs + England")
         return result
-
-    # ─────────────────────────────────────────
-    # Persistence
-    # ─────────────────────────────────────────
 
     def append_and_save(
         self,
@@ -207,7 +113,8 @@ class SyntheticGenerator:
 
         if new_week != max_week + 1:
             raise ValueError(
-                f"Expected week {max_week + 1}, got {new_week}. Weeks must be strictly sequential."
+                f"Expected week {max_week + 1}, got {new_week}. "
+                "Weeks must be strictly sequential."
             )
 
         updated = pd.concat([existing, new_week_df], ignore_index=True)
@@ -218,10 +125,24 @@ class SyntheticGenerator:
         )
         return updated
 
-    def refit(self) -> None:
-        """Re-fit AR(1) parameters from the latest CSV."""
-        self.fit(pd.read_csv(self.csv_path))
-        logger.info("Re-fitted parameters on updated dataset")
+    # ─────────────────────────────────────────
+    # Private
+    # ─────────────────────────────────────────
+
+    def _next_lp(self, last_row: pd.Series, new_week: int) -> float:
+        """
+        Estimate the latent pressure for the new week.
+
+        Back-calculates lp from the last observed bed occupancy:
+            lp ≈ (bed_occ − 84 − seasonal × 4) / 7
+
+        then advances the random walk by one step:
+            lp_new = lp_estimated + N(0, 0.12)
+        """
+        last_week    = int(last_row["week"])
+        seasonal     = SEASONAL_AMPLITUDE * np.cos(2 * np.pi * (last_week - SEASONAL_PEAK_WEEK) / WEEKS_PER_YEAR)
+        lp_estimated = (last_row["bed_occupancy"] - BED_OCC_INTERCEPT - seasonal * BED_OCC_SEA_SCALE) / BED_OCC_LP_SCALE
+        return float(lp_estimated + self.rng.normal(0, LP_RANDOM_WALK_SD))
 
 
 # ─────────────────────────────────────────
@@ -232,18 +153,8 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 
     parser = argparse.ArgumentParser(description="Append new synthetic week(s) to the panel CSV.")
-    parser.add_argument(
-        "--data",
-        type=str,
-        default="synthetic_nhs_pressure.csv",
-        help="Path to weekly panel CSV.",
-    )
-    parser.add_argument(
-        "--weeks",
-        type=int,
-        default=1,
-        help="Number of new weeks to generate (default: 1).",
-    )
+    parser.add_argument("--data",  type=str, default="synthetic_nhs_pressure.csv")
+    parser.add_argument("--weeks", type=int, default=1, help="Number of new weeks to generate.")
     args = parser.parse_args()
 
     if not Path(args.data).exists():
@@ -252,8 +163,7 @@ def main() -> int:
         return 1
 
     gen = SyntheticGenerator(args.data)
-    df = pd.read_csv(args.data)
-    gen.fit(df)
+    df  = pd.read_csv(args.data)
 
     for i in range(args.weeks):
         new_week_df = gen.generate_next_week(df)

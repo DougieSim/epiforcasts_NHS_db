@@ -14,6 +14,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+from epiforcasts_nhs.config import (
+    CI_ADVI_STEPS,
+    CI_METADATA_PATH,
+    CI_POSTERIORS_PATH,
+    DEFAULT_RANDOM_SEED,
+)
 
 LOG_PATH = Path("docs/90-changelog/logs/EVIDENCE_RUN_LOG.md")
 
@@ -24,9 +30,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _git_short_hash() -> str:
     result = _run(["git", "rev-parse", "--short", "HEAD"])
-    if result.returncode != 0:
-        return "unknown"
-    return result.stdout.strip() or "unknown"
+    return result.stdout.strip() or "unknown" if result.returncode == 0 else "unknown"
 
 
 def _append_entry(entry: str) -> None:
@@ -40,14 +44,10 @@ def _append_entry(entry: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Execute evidence checks and append run log entry.")
-    parser.add_argument(
-        "--run-inference-fast",
-        action="store_true",
-        help="Run fast inference before checks (recommended for independent evidence cycle).",
-    )
-    parser.add_argument("--draws", type=int, default=400, help="Draw count to log when fast inference runs.")
-    parser.add_argument("--n-icbs", type=int, default=7, help="ICB count to log for synthetic setup.")
-    parser.add_argument("--n-obs", type=int, default=1092, help="Observation count to log for synthetic setup.")
+    parser.add_argument("--run-inference-fast", action="store_true")
+    parser.add_argument("--draws",  type=int, default=400)
+    parser.add_argument("--n-icbs", type=int, default=7)
+    parser.add_argument("--n-obs",  type=int, default=1092)
     args = parser.parse_args()
 
     start = dt.datetime.now(dt.timezone.utc)
@@ -57,9 +57,9 @@ def main() -> int:
         inference = [
             sys.executable, "-m", "epiforcasts_nhs.cli.inference",
             "--fast",
-            "--advi-steps", "500",
-            "--seed", "42",
-            "--output-path", "ci_posteriors.nc",
+            "--advi-steps", str(CI_ADVI_STEPS),
+            "--seed",        str(DEFAULT_RANDOM_SEED),
+            "--output-path", str(CI_POSTERIORS_PATH),
         ]
         inference_cmd = " ".join(inference)
         print(f"[RUN] {inference_cmd}")
@@ -85,8 +85,8 @@ def main() -> int:
 
     acceptance = [
         sys.executable, "-m", "epiforcasts_nhs.ops.acceptance",
-        "--posterior", "ci_posteriors.nc",
-        "--metadata", "ci_posteriors_metadata.nc",
+        "--posterior", str(CI_POSTERIORS_PATH),
+        "--metadata",  str(CI_METADATA_PATH),
     ]
     print(f"[RUN] {' '.join(acceptance)}")
     acceptance_result = _run(acceptance)
@@ -101,7 +101,24 @@ def main() -> int:
     end = dt.datetime.now(dt.timezone.utc)
     commit_hash = _git_short_hash()
 
-    entry = f"""## {start.date()} (Automated independent cycle)\n\n- Date/time (UTC): {start.isoformat().replace('+00:00', 'Z')} to {end.isoformat().replace('+00:00', 'Z')}\n- Operator: automated local run\n- Commit hash: {commit_hash}\n- Environment: local Python execution\n- Inference command: `{inference_cmd}`\n- Health command: `{' '.join(health)}`\n- Acceptance command: `{' '.join(acceptance)}`\n- Result: PASS\n- Key metrics:\n  - draws: {args.draws}\n  - n_icbs: {args.n_icbs}\n  - n_obs: {args.n_obs}\n- Warnings observed: see terminal output\n- Failures observed: none\n- Follow-up actions: continue daily evidence accumulation and link utility feedback when available\n"""
+    entry = (
+        f"## {start.date()} (Automated independent cycle)\n\n"
+        f"- Date/time (UTC): {start.isoformat().replace('+00:00', 'Z')} to {end.isoformat().replace('+00:00', 'Z')}\n"
+        f"- Operator: automated local run\n"
+        f"- Commit hash: {commit_hash}\n"
+        f"- Environment: local Python execution\n"
+        f"- Inference command: `{inference_cmd}`\n"
+        f"- Health command: `{' '.join(health)}`\n"
+        f"- Acceptance command: `{' '.join(acceptance)}`\n"
+        f"- Result: PASS\n"
+        f"- Key metrics:\n"
+        f"  - draws: {args.draws}\n"
+        f"  - n_icbs: {args.n_icbs}\n"
+        f"  - n_obs: {args.n_obs}\n"
+        f"- Warnings observed: see terminal output\n"
+        f"- Failures observed: none\n"
+        f"- Follow-up actions: continue daily evidence accumulation\n"
+    )
 
     _append_entry(entry)
     print(f"[OK] Evidence entry appended to {LOG_PATH}")

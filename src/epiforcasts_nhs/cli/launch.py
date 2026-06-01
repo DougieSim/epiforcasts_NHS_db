@@ -1,8 +1,6 @@
 """
 CLI entry point — Streamlit launcher with automatic port fallback.
 
-Parses arguments and delegates to cli.utils for port selection.
-
 Usage:
     epiforcasts-launch
     epiforcasts-launch --app src/epiforcasts_nhs/dashboard/app_fast.py
@@ -16,19 +14,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+from epiforcasts_nhs.config import STREAMLIT_MAX_PORT, STREAMLIT_PREFERRED_PORT
 from epiforcasts_nhs.cli.utils import pick_port
 
-_PACKAGE_ROOT = Path(__file__).parent.parent  # src/epiforcasts_nhs/
+_PACKAGE_ROOT = Path(__file__).parent.parent
 APP_FULL = str(_PACKAGE_ROOT / "dashboard" / "app.py")
 APP_FAST = str(_PACKAGE_ROOT / "dashboard" / "app_fast.py")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch Streamlit with safe port fallback.")
-    parser.add_argument("--app",            default=APP_FULL,
-                        help="Streamlit app file (default: full dashboard).")
-    parser.add_argument("--preferred-port", type=int, default=8501)
-    parser.add_argument("--max-port",       type=int, default=8510)
+    parser.add_argument("--app",            default=APP_FULL)
+    parser.add_argument("--preferred-port", type=int, default=STREAMLIT_PREFERRED_PORT)
+    parser.add_argument("--max-port",       type=int, default=STREAMLIT_MAX_PORT)
     parser.add_argument("--headless",       choices=["true", "false"], default="true")
     args = parser.parse_args()
 

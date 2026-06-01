@@ -23,6 +23,7 @@ import arviz as az
 from epiforcasts_nhs.core.utils import (
     LATENT_BASELINE,
     LATENT_SCALE,
+    N_SEASONS,
     SEASON_NAMES,
     check_season_alignment,
     current_season_from_enc,
@@ -30,10 +31,35 @@ from epiforcasts_nhs.core.utils import (
     prepare_data,
     pressure_summary,
 )
+from epiforcasts_nhs.config import DEFAULT_RANDOM_SEED
+
+# ─────────────────────────────────────────
+# Sampling configuration
+# ─────────────────────────────────────────
+
+_DRAWS_FAST       = 400
+_TUNE_FAST        = 400
+_DRAWS_FULL       = 2000
+_TUNE_FULL        = 2000
+_MCMC_CHAINS      = 4
+_MCMC_CORES       = 4
+_NUTS_TARGET_ACCEPT = 0.95
+
+# ─────────────────────────────────────────
+# Model prior parameters
+# ─────────────────────────────────────────
+
+_PRIOR_MU_NATIONAL_SD    = 1.0
+_PRIOR_SIGMA_ICB_RATE    = 1.0
+_PRIOR_RHO_ALPHA         = 2.0   # Beta(2,2) — symmetric, data-driven persistence
+_PRIOR_RHO_BETA          = 2.0
+_PRIOR_SIGMA_DRIFT_LAM   = 1.0
+_PRIOR_SIGMA_SEASON_LAM  = 5.0
+_PRIOR_SIGMA_OBS_LAM     = 5.0
 
 _FAST = os.environ.get("PRESSURE_MODEL_FAST", "1").strip().lower() not in ("0", "false", "no")
 
-rng = np.random.default_rng(42)
+rng = np.random.default_rng(DEFAULT_RANDOM_SEED)
 
 
 # ─────────────────────────────────────────
@@ -50,12 +76,12 @@ def build_model(enc: dict) -> pm.Model:
     n_weeks    = enc["n_weeks"]
 
     with pm.Model() as model:
-        mu_national = pm.Normal("mu_national", 0, 1)
-        sigma_icb   = pm.Exponential("sigma_icb", 1)
-        rho         = pm.Beta("rho", alpha=2, beta=2)
+        mu_national = pm.Normal("mu_national", 0, _PRIOR_MU_NATIONAL_SD)
+        sigma_icb   = pm.Exponential("sigma_icb", _PRIOR_SIGMA_ICB_RATE)
+        rho         = pm.Beta("rho", alpha=_PRIOR_RHO_ALPHA, beta=_PRIOR_RHO_BETA)
 
-        level_init = pm.Normal("level_init", mu=mu_national, sigma=sigma_icb, shape=n_icb)
-        sigma_drift = pm.Exponential("sigma_drift", lam=1)
+        level_init  = pm.Normal("level_init", mu=mu_national, sigma=sigma_icb, shape=n_icb)
+        sigma_drift = pm.Exponential("sigma_drift", lam=_PRIOR_SIGMA_DRIFT_LAM)
         innovations = pm.Normal("innovations", 0, sigma_drift, shape=(n_weeks - 1, n_icb))
 
         levels_rest = pytensor.scan(
@@ -70,12 +96,12 @@ def build_model(enc: dict) -> pm.Model:
             pt.concatenate([level_init[None, :], levels_rest], axis=0),
         )  # (n_weeks, n_icb)
 
-        sigma_season   = pm.Exponential("sigma_season", lam=5)
-        season_raw     = pm.Normal("season_raw", 0, sigma_season, shape=4)
+        sigma_season   = pm.Exponential("sigma_season", lam=_PRIOR_SIGMA_SEASON_LAM)
+        season_raw     = pm.Normal("season_raw", 0, sigma_season, shape=N_SEASONS)
         season_effects = pm.Deterministic("season_effects", season_raw - pt.mean(season_raw))
 
         latent    = level[week_idx, icb_codes] + season_effects[season_idx]
-        sigma_obs = pm.Exponential("sigma_obs", lam=5)
+        sigma_obs = pm.Exponential("sigma_obs", lam=_PRIOR_SIGMA_OBS_LAM)
         pm.Normal("bed_obs", mu=LATENT_BASELINE + latent * LATENT_SCALE, sigma=sigma_obs, observed=beds)
 
     return model
@@ -93,8 +119,10 @@ def sample_prior(model: pm.Model, draws: int = 100) -> az.InferenceData:
 def sample_posterior(model: pm.Model, draws: int, tune: int) -> az.InferenceData:
     with model:
         return pm.sample(
-            draws=draws, tune=tune, chains=4, cores=4,
-            target_accept=0.95, progressbar=True, compute_convergence_checks=False,
+            draws=draws, tune=tune,
+            chains=_MCMC_CHAINS, cores=_MCMC_CORES,
+            target_accept=_NUTS_TARGET_ACCEPT,
+            progressbar=True, compute_convergence_checks=False,
         )
 
 
@@ -112,13 +140,11 @@ def save_posteriors(idata: az.InferenceData, enc: dict, path: str = "posteriors.
     """Save posteriors to NetCDF with a Windows-safe atomic swap."""
     import sys
     from pathlib import Path
+    from epiforcasts_nhs.config import STAGED_POSTERIORS
 
     final_path = Path(path)
-    idata.attrs["icbs"] = list(enc["categories"])
-
-    last_week_mask = np.where(enc["week_idx"] == enc["n_weeks"] - 1)[0]
-    if len(last_week_mask) > 0:
-        idata.attrs["last_season"] = int(enc["season_idx"][last_week_mask[0]])
+    idata.attrs["icbs"]        = list(enc["categories"])
+    idata.attrs["last_season"] = current_season_from_enc(enc)
 
     tmp_fd, tmp_path = tempfile.mkstemp(dir=final_path.parent, prefix=".posteriors_tmp_", suffix=".nc")
     try:
@@ -134,7 +160,7 @@ def save_posteriors(idata: az.InferenceData, enc: dict, path: str = "posteriors.
                 if backup_path.exists():
                     os.unlink(str(backup_path))
             except PermissionError:
-                staged = final_path.with_name(".posteriors_new.nc")
+                staged = final_path.parent / STAGED_POSTERIORS.name
                 if os.path.exists(tmp_path):
                     os.replace(tmp_path, str(staged))
                 raise RuntimeError(
@@ -169,7 +195,7 @@ def fit_pressure_model(df: pd.DataFrame, *, fast: bool | None = None) -> tuple:
     """
     if fast is None:
         fast = _FAST
-    draws, tune = (400, 400) if fast else (2000, 2000)
+    draws, tune = (_DRAWS_FAST, _TUNE_FAST) if fast else (_DRAWS_FULL, _TUNE_FULL)
 
     data = prepare_data(df)
     enc  = encode(data)
@@ -201,7 +227,8 @@ def fit_pressure_model(df: pd.DataFrame, *, fast: bool | None = None) -> tuple:
 
 
 def main():
-    df = pd.read_csv("synthetic_nhs_pressure.csv")
+    from epiforcasts_nhs.config import WEEKLY_CSV
+    df = pd.read_csv(WEEKLY_CSV)
     fit_pressure_model(df)
 
 

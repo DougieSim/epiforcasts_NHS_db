@@ -11,6 +11,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import arviz as az
 
+from epiforcasts_nhs.config import DASHBOARD_POLL_INTERVAL_S, POSTERIORS_PATH, STAGED_POSTERIORS, WEEKLY_CSV
 from epiforcasts_nhs.core.cache import CacheManager
 from epiforcasts_nhs.dashboard.utils import (
     DEFAULT_RISK_ELEVATED_TIER_MIN_P_CONCERN,
@@ -35,9 +36,9 @@ from epiforcasts_nhs.dashboard.plots import (
     fig_clinical_summary,
 )
 
-WEEKLY_CSV    = "synthetic_nhs_pressure.csv"
-POSTERIORS_NC = "posteriors.nc"
-_POLL_INTERVAL_S = 10
+POSTERIORS_NC    = str(POSTERIORS_PATH)
+WEEKLY_CSV_STR   = str(WEEKLY_CSV)
+_POLL_INTERVAL_S = DASHBOARD_POLL_INTERVAL_S
 
 
 # ─────────────────────────────────────────
@@ -286,7 +287,7 @@ st.markdown("""
 </div>""", unsafe_allow_html=True)
 
 # Staged file pickup (Windows atomic swap fallback)
-_staged = os.path.join(os.path.dirname(POSTERIORS_NC) or ".", ".posteriors_new.nc")
+_staged = str(STAGED_POSTERIORS)
 if os.path.isfile(_staged):
     try:
         _backup = POSTERIORS_NC + ".bak"
@@ -304,7 +305,7 @@ if os.path.isfile(_staged):
 posteriors_mtime = (
     os.path.getmtime(POSTERIORS_NC) if os.path.isfile(POSTERIORS_NC) else 0.0
 )
-csv_mtime = os.path.getmtime(WEEKLY_CSV) if os.path.isfile(WEEKLY_CSV) else 0.0
+csv_mtime = os.path.getmtime(WEEKLY_CSV_STR) if os.path.isfile(WEEKLY_CSV_STR) else 0.0
 
 _last_pm = st.session_state.get("last_posteriors_mtime", -1.0)
 if posteriors_mtime != _last_pm and _last_pm != -1.0:
@@ -317,7 +318,7 @@ if posteriors_mtime != _last_pm and _last_pm != -1.0:
 st.session_state["last_posteriors_mtime"] = posteriors_mtime
 
 # ── Data ──────────────────────────────────────────────────────────────────
-df    = load_weekly_data(WEEKLY_CSV, csv_mtime)
+df    = load_weekly_data(WEEKLY_CSV_STR, csv_mtime)
 cache = CacheManager(posteriors_path=POSTERIORS_NC)
 
 if not cache.is_valid():

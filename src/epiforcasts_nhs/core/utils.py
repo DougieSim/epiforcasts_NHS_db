@@ -1,8 +1,8 @@
 """
 Utility functions and constants for the Bayesian pressure model.
 
-Covers data preparation, encoding, season mapping, latent-scale conversion,
-and clinical summary extraction from posteriors.
+Covers latent-scale parameters, pressure thresholds, season mapping,
+data preparation, encoding, and clinical summary extraction.
 """
 
 from __future__ import annotations
@@ -17,15 +17,44 @@ import arviz as az
 
 # Bed occupancy = LATENT_BASELINE + latent_pressure * LATENT_SCALE
 # At latent = 0 → 85% occupancy; one latent unit ≈ 6% occupancy.
+# Note: the DGP in data.generator uses (84, 7) — intentional misspecification.
 LATENT_BASELINE: float = 85.0
-LATENT_SCALE: float = 6.0
+LATENT_SCALE:    float = 6.0
+
+
+# ─────────────────────────────────────────
+# Pressure thresholds (latent scale)
+# ─────────────────────────────────────────
+
+# Demo cut-points only — not NHS operational thresholds.
+# Used by the model (core), cache, and dashboard; defined here once so core
+# modules never need to import from the dashboard layer.
+THRESHOLD_BASELINE: float = 0.0
+THRESHOLD_CONCERN:  float = 0.5
+THRESHOLD_ELEVATED: float = 1.1
+
+
+# ─────────────────────────────────────────
+# Clinical summary parameters
+# ─────────────────────────────────────────
+
+# Credible interval bounds used in pressure_summary (80% CI)
+PRESSURE_CI_LOWER_PCT: float = 10.0
+PRESSURE_CI_UPPER_PCT: float = 90.0
+
+# Default lookback window for direction-of-travel calculations
+LOOKBACK_WEEKS: int = 4
+
+# Weeks shown in the season-alignment console check
+SEASON_ALIGNMENT_DISPLAY_WEEKS: int = 8
 
 
 # ─────────────────────────────────────────
 # Season constants
 # ─────────────────────────────────────────
 
-SEASON_NAMES = ["Winter", "Spring", "Summer", "Autumn"]
+SEASON_NAMES: list[str] = ["Winter", "Spring", "Summer", "Autumn"]
+N_SEASONS:    int        = 4
 
 # Calendar month → season index: 0=Winter, 1=Spring, 2=Summer, 3=Autumn
 MONTH_TO_SEASON: dict[int, int] = {
@@ -52,9 +81,7 @@ def encode(df: pd.DataFrame) -> dict:
     Season is derived from the calendar month column so Winter always maps to
     Dec/Jan/Feb regardless of which week the dataset starts on.
 
-    Returns
-    -------
-    dict with keys:
+    Returns dict with keys:
         icb_codes, week_idx, season_idx, beds, n_icb, n_weeks, categories
     """
     from datetime import date as _date, timedelta as _td
@@ -98,14 +125,14 @@ def encode(df: pd.DataFrame) -> dict:
 
 
 def check_season_alignment(enc: dict, df: pd.DataFrame) -> None:
-    """Print season and date for the first 8 weeks as a sanity check."""
+    """Print season and date for the first N weeks as a sanity check."""
     min_week   = df["week"].min()
     week_idx   = enc["week_idx"]
     season_idx = enc["season_idx"]
     has_date   = "week_date" in df.columns
 
-    print("Season alignment check (first 8 weeks):")
-    for w in range(min(8, enc["n_weeks"])):
+    print("Season alignment check (first %d weeks):" % SEASON_ALIGNMENT_DISPLAY_WEEKS)
+    for w in range(min(SEASON_ALIGNMENT_DISPLAY_WEEKS, enc["n_weeks"])):
         mask = np.where(week_idx == w)[0]
         if len(mask) == 0:
             continue
@@ -146,14 +173,14 @@ def current_total_pressure_samples(
     current_season : 0=Winter, 1=Spring, 2=Summer, 3=Autumn
     """
     level          = current_pressure_samples(idata, icb_idx)
-    season_effects = idata.posterior["season_effects"].values.reshape(-1, 4)
+    season_effects = idata.posterior["season_effects"].values.reshape(-1, N_SEASONS)
     return level + season_effects[:, current_season]
 
 
 def direction_of_travel(
     idata: az.InferenceData,
     icb_idx: int,
-    lookback_weeks: int = 4,
+    lookback_weeks: int = LOOKBACK_WEEKS,
 ) -> np.ndarray:
     """
     Posterior samples for change in underlying level over the last N weeks.
@@ -168,7 +195,7 @@ def direction_of_travel(
 def pressure_summary(
     idata: az.InferenceData,
     enc: dict,
-    lookback_weeks: int = 4,
+    lookback_weeks: int = LOOKBACK_WEEKS,
     current_season: int = 0,
 ) -> pd.DataFrame:
     """
@@ -186,11 +213,11 @@ def pressure_summary(
         rows.append(dict(
             icb=icb_name,
             pressure_median=float(np.median(level_samples)),
-            pressure_lo=float(np.percentile(level_samples, 10)),
-            pressure_hi=float(np.percentile(level_samples, 90)),
+            pressure_lo=float(np.percentile(level_samples, PRESSURE_CI_LOWER_PCT)),
+            pressure_hi=float(np.percentile(level_samples, PRESSURE_CI_UPPER_PCT)),
             bed_occ_median=float(LATENT_BASELINE + np.median(total_samples) * LATENT_SCALE),
-            p_above_concern=float(np.mean(total_samples > 0.5)),
-            p_above_high=float(np.mean(total_samples > 1.1)),
+            p_above_concern=float(np.mean(total_samples > THRESHOLD_CONCERN)),
+            p_above_high=float(np.mean(total_samples > THRESHOLD_ELEVATED)),
             dot_median=float(np.median(dot)),
             p_rising=float(np.mean(dot > 0)),
         ))

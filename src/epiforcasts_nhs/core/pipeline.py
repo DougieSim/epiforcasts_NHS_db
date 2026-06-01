@@ -33,7 +33,6 @@ def step_generate(generator: SyntheticGenerator, df: pd.DataFrame) -> pd.DataFra
     Returns the updated DataFrame (does not re-read from disk).
     """
     logger.info("Generating new synthetic week...")
-    generator.fit(df)
     new_week_df = generator.generate_next_week(df)
     new_week    = int(new_week_df["week"].iloc[0])
     n_icbs      = len(new_week_df[new_week_df["icb"] != "England"])
