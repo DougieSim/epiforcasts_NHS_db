@@ -61,7 +61,7 @@ def main() -> None:
     print(f"[OK] Loaded {len(df)} rows, {df['icb'].nunique()} ICBs")
 
     print("Fitting Bayesian model…")
-    _, idata = fit_pressure_model(
+    _, idata, _ = fit_pressure_model(
         df,
         fast=not args.full,
         random_seed=args.seed,
