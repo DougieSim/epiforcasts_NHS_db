@@ -6,7 +6,7 @@ Run this once (or on a schedule) to update posterior estimates; the Streamlit ap
 consumes the stored results.
 
 Usage:
-    python run_inference.py [--data-path synthetic_nhs_pressure.csv] [--output-path posteriors.nc] [--fast]
+    epiforcasts-inference [--data-path synthetic_nhs_pressure.csv] [--output-path posteriors.nc] [--fast]
 
 Environment:
     PRESSURE_MODEL_FAST=0  to use fuller sampling (1000 draws, 1000 tune) instead of defaults.
@@ -27,7 +27,7 @@ import pandas as pd
 import pymc as pm
 import arviz as az
 
-from cache_manager import CacheManager
+from epiforcasts_nhs.core.cache import CacheManager
 
 
 def fit_pressure_model(
@@ -231,7 +231,7 @@ def save_posterior_summaries(
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     print(f"[OK] Metadata saved to {metadata_path}")
-    
+
     # Warm cache for instant UI access
     print("Warming cache for instant UI access…")
     cache = CacheManager(posteriors_path=actual_output_path)

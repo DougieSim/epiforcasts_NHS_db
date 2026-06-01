@@ -11,8 +11,8 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import arviz as az
 
-from cache_manager import CacheManager
-from dashboard_shared import (
+from epiforcasts_nhs.core.cache import CacheManager
+from epiforcasts_nhs.dashboard.utils import (
     DEFAULT_RISK_ELEVATED_TIER_MIN_P_CONCERN,
     DEFAULT_RISK_ELEVATED_TIER_MIN_P_HIGH,
     DEFAULT_RISK_MEDIUM_TIER_MIN_P_CONCERN,
@@ -28,13 +28,12 @@ from dashboard_shared import (
     resolve_icb_index,
     seasonal_effect_samples,
 )
-from plots import (
+from epiforcasts_nhs.dashboard.plots import (
     fig_pressure_question,
     fig_pressure_trajectory,
     fig_seasonal_effects,
     fig_clinical_summary,
 )
-from dashboard_shared import time_to_threshold as _time_to_threshold
 
 WEEKLY_CSV    = "synthetic_nhs_pressure.csv"
 POSTERIORS_NC = "posteriors.nc"
@@ -340,8 +339,8 @@ cache = CacheManager(posteriors_path=POSTERIORS_NC)
 
 if not cache.is_valid():
     st.error(
-        "❌ Posterior cache is not ready\n\n"
-        "**Fix:**\n```bash\npython inference_daemon.py --once\n```"
+        "Posterior cache is not ready\n\n"
+        "**Fix:**\n```bash\nepiforcasts-daemon --once\n```"
     )
     # Poll and retry
     time.sleep(_POLL_INTERVAL_S)
@@ -402,14 +401,14 @@ with st.sidebar:
         st.caption("Thresholds on posterior probabilities for the summary label only.")
         c1, c2 = st.columns(2)
         with c1:
-            pe_hi  = st.number_input("Elevated if P(high) ≥",  0.0, 1.0,
+            pe_hi  = st.number_input("Elevated if P(high) >=",  0.0, 1.0,
                                      DEFAULT_RISK_ELEVATED_TIER_MIN_P_HIGH,  0.01, key="pe_hi")
-            pe_med = st.number_input("Medium if P(high) ≥",    0.0, 1.0,
+            pe_med = st.number_input("Medium if P(high) >=",    0.0, 1.0,
                                      DEFAULT_RISK_MEDIUM_TIER_MIN_P_HIGH,    0.01, key="pe_med")
         with c2:
-            pc_hi  = st.number_input("… or P(concern) ≥",      0.0, 1.0,
+            pc_hi  = st.number_input("... or P(concern) >=",      0.0, 1.0,
                                      DEFAULT_RISK_ELEVATED_TIER_MIN_P_CONCERN, 0.01, key="pc_hi")
-            pc_med = st.number_input("… or P(concern) ≥",      0.0, 1.0,
+            pc_med = st.number_input("... or P(concern) >=",      0.0, 1.0,
                                      DEFAULT_RISK_MEDIUM_TIER_MIN_P_CONCERN,   0.01, key="pc_med")
 
 # ─────────────────────────────────────────
@@ -471,69 +470,6 @@ with _main_area.container():
         season_now_str=season_now_str,
         pe_hi=pe_hi, pc_hi=pc_hi, pe_med=pe_med, pc_med=pc_med,
     )
-
-    # ─────────────────────────────────────────
-    # Time-to-threshold section
-    # ─────────────────────────────────────────
-
-    st.markdown("---")
-    st.markdown("### Time to Threshold")
-    st.caption(
-        "Estimated weeks until total pressure first crosses each reference level. "
-        "Median of the posterior first-passage-time distribution (12-week horizon). "
-        ">12w = fewer than 5% of samples cross within 12 weeks. "
-        "Now = threshold already exceeded. "
-        "_Assumptions: AR(1) rolled forward from current posterior; rho and sigma\\_drift "
-        "drawn per sample; seasonal effects fixed at posterior estimates; "
-        "future seasons from calendar dates; observation noise excluded._"
-    )
-
-    _last_week = int(_all_icb_df["week"].max())
-    _horizon   = 12
-    _rng       = np.random.default_rng(42)
-
-    def _fmt_weeks(ttt: dict) -> str:
-        if ttt["p_cross"] < 0.05:
-            return f">{ttt['horizon_weeks']}w"
-        if ttt["median_weeks"] is not None and ttt["median_weeks"] <= 0:
-            return "Now"
-        return f"~{int(round(ttt['median_weeks']))}w" if ttt["median_weeks"] else "—"
-
-    if selected_geo == "England":
-        _icbs_list = [str(n) for n in icbs_in_posterior]
-        # Render in rows of 4
-        _cols_per_row = 4
-        for _row_start in range(0, len(_icbs_list), _cols_per_row):
-            _row_icbs = _icbs_list[_row_start : _row_start + _cols_per_row]
-            _cols = st.columns(len(_row_icbs))
-            for _col, _icb_name in zip(_cols, _row_icbs):
-                _idx = _icbs_list.index(_icb_name)
-                _ttt_c = _time_to_threshold(
-                    idata, _idx, _last_week, THRESHOLD_CONCERN, _horizon, rng=_rng,
-                )
-                _ttt_e = _time_to_threshold(
-                    idata, _idx, _last_week, THRESHOLD_ELEVATED, _horizon, rng=_rng,
-                )
-                _short = _icb_name.replace("NHS ", "").replace(" ICB", "")
-                with _col:
-                    st.markdown(f"**{_short}**")
-                    st.metric("Weeks to Concern",  _fmt_weeks(_ttt_c))
-                    st.metric("Weeks to Elevated", _fmt_weeks(_ttt_e))
-    else:
-        _icb_idx_ttt = resolve_icb_index(idata, selected_geo)
-        _ttt_c = _time_to_threshold(
-            idata, _icb_idx_ttt, _last_week, THRESHOLD_CONCERN,  _horizon, rng=_rng,
-        )
-        _ttt_e = _time_to_threshold(
-            idata, _icb_idx_ttt, _last_week, THRESHOLD_ELEVATED, _horizon, rng=_rng,
-        )
-        _mc1, _mc2 = st.columns(2)
-        with _mc1:
-            st.metric("Weeks to Concern",  _fmt_weeks(_ttt_c),
-                      help=f"P(crossing within {_horizon}w) = {_ttt_c['p_cross']:.0%}")
-        with _mc2:
-            st.metric("Weeks to Elevated", _fmt_weeks(_ttt_e),
-                      help=f"P(crossing within {_horizon}w) = {_ttt_e['p_cross']:.0%}")
 
 # ─────────────────────────────────────────
 # Auto-rerun polling loop

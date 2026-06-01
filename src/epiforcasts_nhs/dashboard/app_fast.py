@@ -9,7 +9,7 @@ Compare to app.py:
 - app_fast.py: Lightweight display of current estimates only
 
 Usage:
-    streamlit run app_fast.py
+    streamlit run src/epiforcasts_nhs/dashboard/app_fast.py
 """
 
 import os
@@ -23,8 +23,8 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import arviz as az
 
-from cache_manager import CacheManager
-from dashboard_shared import (
+from epiforcasts_nhs.core.cache import CacheManager
+from epiforcasts_nhs.dashboard.utils import (
     DEFAULT_RISK_ELEVATED_TIER_MIN_P_CONCERN,
     DEFAULT_RISK_ELEVATED_TIER_MIN_P_HIGH,
     DEFAULT_RISK_MEDIUM_TIER_MIN_P_CONCERN,
@@ -45,16 +45,16 @@ def _risk_band_summary(
 ) -> tuple[str, str]:
     """Simple risk classification."""
     if p_elevated >= DEFAULT_RISK_ELEVATED_TIER_MIN_P_HIGH or p_concern >= DEFAULT_RISK_ELEVATED_TIER_MIN_P_CONCERN:
-        return "🔴 Elevated", "Prioritise review of capacity and escalation plans."
+        return "Elevated", "Prioritise review of capacity and escalation plans."
     if p_elevated >= DEFAULT_RISK_MEDIUM_TIER_MIN_P_HIGH or p_concern >= DEFAULT_RISK_MEDIUM_TIER_MIN_P_CONCERN:
-        return "🟡 Medium", "Worth closer monitoring."
-    return "🟢 Low", "No strong signal of elevated pressure."
+        return "Medium", "Worth closer monitoring."
+    return "Low", "No strong signal of elevated pressure."
 
 
 def _plot_minimal(samples: np.ndarray) -> plt.Figure:
     """Minimal histogram for fast rendering."""
     lo, mid, hi = credible_triplet(samples, 0.9)
-    
+
     fig, ax = plt.subplots(figsize=(10, 3), layout="constrained")
     ax.hist(
         samples,
@@ -65,25 +65,25 @@ def _plot_minimal(samples: np.ndarray) -> plt.Figure:
         edgecolor="white",
         linewidth=0.5,
     )
-    
+
     ax.axvspan(lo, hi, alpha=0.15, color="#1e3a8a", label="90% plausible range")
     ax.axvline(THRESHOLD_BASELINE, color="#64748b", linestyle="--", linewidth=1.2, label="Baseline")
     ax.axvline(THRESHOLD_CONCERN, color="#d97706", linestyle="--", linewidth=1.2, label="Concern")
     ax.axvline(THRESHOLD_ELEVATED, color="#b91c1c", linestyle="--", linewidth=1.2, label="High pressure")
-    
+
     ax.set_xlabel("System pressure index (unitless model)")
     ax.set_ylabel("Plausibility")
     ax.set_title(f"Where does evidence put pressure? (median: {mid:.2f})", fontsize=11)
     ax.legend(loc="upper right", fontsize=8)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    
+
     return fig
 
 
 def _inject_nhs_theme() -> None:
-        st.markdown(
-                """
+    st.markdown(
+        """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap');
 
@@ -137,9 +137,9 @@ h1, h2, h3 {
     background: #f8fbff;
 }
 </style>
-                """,
-                unsafe_allow_html=True,
-        )
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_resource(show_spinner="Loading cached posteriors…")
@@ -188,10 +188,10 @@ cache = CacheManager(posteriors_path=POSTERIORS_NC)
 # Validate cache is ready (no MCMC runs guaranteed here)
 if not cache.is_valid():
     st.error(
-        f"❌ Cache not ready\n\n"
-        f"**Status:** Posterior {'✓' if cache.is_posterior_available() else '✗'} | "
-        f"Cache {'✓' if cache.is_cache_warm() else '✗'}\n\n"
-        f"**Run:** `python inference_daemon.py --once`"
+        f"Cache not ready\n\n"
+        f"**Status:** Posterior {'ok' if cache.is_posterior_available() else 'missing'} | "
+        f"Cache {'ok' if cache.is_cache_warm() else 'not warmed'}\n\n"
+        f"**Run:** `epiforcasts-daemon --once`"
     )
     st.stop()
 
@@ -214,7 +214,7 @@ with st.sidebar:
         options=icbs,
         label_visibility="collapsed",
     )
-    
+
     st.divider()
     st.caption(f"**Last updated:** {last_update}")
     st.caption(f"**Posterior samples:** {int(idata.posterior.dims.get('draw', 0)):,}")
@@ -234,25 +234,25 @@ risk_label, risk_hint = _risk_band_summary(p_above_elevated, p_above_concern)
 # Summary card
 with st.container(border=True):
     col1, col2, col3, col4 = st.columns([1.2, 1, 1, 1])
-    
+
     with col1:
         st.markdown(f"## {risk_label}")
         st.caption(risk_hint)
-    
+
     with col2:
         st.metric(
             label="P(baseline)",
             value=f"{p_above_baseline:.0%}",
             delta="threshold: 0.0",
         )
-    
+
     with col3:
         st.metric(
             label="P(concern)",
             value=f"{p_above_concern:.0%}",
             delta="threshold: 0.5",
         )
-    
+
     with col4:
         st.metric(
             label="P(high)",
@@ -275,6 +275,5 @@ plt.close(fig)
 st.divider()
 st.caption(
     f"**Area:** {selected_icb} | "
-    f"**Model:** Latent pressure on bed occupancy (demo only) | "
-    f"[Docs](OFFLINE_INFERENCE.md) | [Full UI](http://localhost:8501)"
+    f"**Model:** Latent pressure on bed occupancy (demo only)"
 )

@@ -2,8 +2,8 @@
 Run a standardized evidence cycle and append results to the evidence log.
 
 Usage:
-    python log_evidence_run.py --run-inference-fast
-    python log_evidence_run.py
+    epiforcasts-evidence --run-inference-fast
+    epiforcasts-evidence
 """
 
 from __future__ import annotations
@@ -55,15 +55,11 @@ def main() -> int:
 
     if args.run_inference_fast:
         inference = [
-            sys.executable,
-            "run_inference.py",
+            sys.executable, "-m", "epiforcasts_nhs.cli.inference",
             "--fast",
-            "--advi-steps",
-            "500",
-            "--seed",
-            "42",
-            "--output-path",
-            "ci_posteriors.nc",
+            "--advi-steps", "500",
+            "--seed", "42",
+            "--output-path", "ci_posteriors.nc",
         ]
         inference_cmd = " ".join(inference)
         print(f"[RUN] {inference_cmd}")
@@ -76,7 +72,7 @@ def main() -> int:
             print("[FAIL] Inference step failed; evidence log not updated.", file=sys.stderr)
             return result.returncode
 
-    health = [sys.executable, "health_check.py"]
+    health = [sys.executable, "-m", "epiforcasts_nhs.ops.health"]
     print(f"[RUN] {' '.join(health)}")
     health_result = _run(health)
     if health_result.stdout:
@@ -88,12 +84,9 @@ def main() -> int:
         return health_result.returncode
 
     acceptance = [
-        sys.executable,
-        "acceptance_check.py",
-        "--posterior",
-        "ci_posteriors.nc",
-        "--metadata",
-        "ci_posteriors_metadata.nc",
+        sys.executable, "-m", "epiforcasts_nhs.ops.acceptance",
+        "--posterior", "ci_posteriors.nc",
+        "--metadata", "ci_posteriors_metadata.nc",
     ]
     print(f"[RUN] {' '.join(acceptance)}")
     acceptance_result = _run(acceptance)
