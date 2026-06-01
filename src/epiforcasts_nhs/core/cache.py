@@ -17,25 +17,10 @@ import arviz as az
 
 from epiforcasts_nhs.config import CACHE_DIR as _DEFAULT_CACHE_DIR
 from epiforcasts_nhs.config import POSTERIORS_PATH as _DEFAULT_POSTERIORS_PATH
-from epiforcasts_nhs.core.utils import (
-    THRESHOLD_BASELINE,
-    THRESHOLD_CONCERN,
-    THRESHOLD_ELEVATED,
-    current_pressure_samples as _extract_level_samples,
-)
+import epiforcasts_nhs.core.constants as constants
+from epiforcasts_nhs.core.utils import current_pressure_samples as _extract_level_samples
 
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────
-# Cache constants
-# ─────────────────────────────────────────
-
-_TTL_HOURS_DEFAULT = 24
-_CACHE_VERSION     = 1
-
-# Percentiles stored in the summary-stats JSON
-_SUMMARY_QUANTILE_KEYS = ("q05", "q25", "q50", "q75", "q95")
-_SUMMARY_QUANTILE_PCTS = (5,     25,    50,    75,    95)
 
 
 class CacheManager:
@@ -53,7 +38,7 @@ class CacheManager:
         self,
         posteriors_path: Path | str = _DEFAULT_POSTERIORS_PATH,
         cache_dir: Path | str = _DEFAULT_CACHE_DIR,
-        ttl_hours: int = _TTL_HOURS_DEFAULT,
+        ttl_hours: int = constants.CACHE.ttl_hours_default,
     ):
         self.posteriors_path = Path(posteriors_path)
         self.cache_dir       = Path(cache_dir)
@@ -122,12 +107,12 @@ class CacheManager:
                     "max":    float(np.max(samples)),
                     "quantiles": {
                         key: float(np.percentile(samples, pct))
-                        for key, pct in zip(_SUMMARY_QUANTILE_KEYS, _SUMMARY_QUANTILE_PCTS)
+                        for key, pct in zip(constants.CACHE.summary_quantile_keys, constants.CACHE.summary_quantile_pcts)
                     },
                     "probabilities": {
-                        "p_above_baseline": float(np.mean(samples > THRESHOLD_BASELINE)),
-                        "p_above_concern":  float(np.mean(samples > THRESHOLD_CONCERN)),
-                        "p_above_elevated": float(np.mean(samples > THRESHOLD_ELEVATED)),
+                        "p_above_baseline": float(np.mean(samples > constants.PRESSURE_THRESHOLDS.baseline)),
+                        "p_above_concern":  float(np.mean(samples > constants.PRESSURE_THRESHOLDS.concern)),
+                        "p_above_elevated": float(np.mean(samples > constants.PRESSURE_THRESHOLDS.elevated)),
                     },
                 }
                 icb_cache_file = self.icb_samples_path / f"{icb_idx:02d}_{icb_name.replace(' ', '_')}.npy"
@@ -141,7 +126,7 @@ class CacheManager:
                 "posteriors_mtime": self.posteriors_path.stat().st_mtime,
                 "n_icbs":           len(icbs),
                 "n_draws":          int(n_draws),
-                "cache_version":    _CACHE_VERSION,
+                "cache_version":    constants.CACHE.version,
             }
             with open(self.health_check_path, "w") as f:
                 json.dump(health, f, indent=2)

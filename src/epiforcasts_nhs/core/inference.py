@@ -24,27 +24,13 @@ from epiforcasts_nhs.config import (
 )
 from epiforcasts_nhs.core.cache import CacheManager
 from epiforcasts_nhs.core.model import build_model
+import epiforcasts_nhs.core.constants as constants
 from epiforcasts_nhs.core.utils import (
-    N_SEASONS,
-    SEASON_NAMES,
     check_season_alignment,
     current_season_from_enc,
     encode,
     prepare_data,
 )
-
-# ─────────────────────────────────────────
-# Sampling configuration
-# ─────────────────────────────────────────
-
-_DRAWS_FAST              = 400
-_DRAWS_FULL              = 1000
-_TUNE_FULL               = 1000
-_ADVI_STEPS_MIN_FALLBACK = 30_000   # minimum steps when NUTS fails and we fall back to ADVI
-_NUTS_TARGET_ACCEPT_1    = 0.90     # first NUTS attempt
-_NUTS_TARGET_ACCEPT_2    = 0.95     # second NUTS attempt (more conservative)
-_NUTS_INIT_METHOD        = "adapt_diag"
-_SAVE_RETRY_ATTEMPTS     = 3        # lock-retry count before falling back to artifact path
 
 
 # ─────────────────────────────────────────
@@ -86,13 +72,14 @@ def fit_pressure_model(
     model = build_model(enc)
     print(f"Inference config: fast={fast}, seed={random_seed}, advi_steps={advi_steps}")
 
+    s = constants.INFERENCE_SAMPLING
     if fast:
         idata, inference_method = _sample_advi(
-            model, advi_steps=advi_steps, draws=_DRAWS_FAST, random_seed=random_seed
+            model, advi_steps=advi_steps, draws=s.draws_fast, random_seed=random_seed
         )
     else:
         idata, inference_method = _sample_nuts_with_fallback(
-            model, draws=_DRAWS_FULL, tune=_TUNE_FULL,
+            model, draws=s.draws_full, tune=s.tune_full,
             advi_steps=advi_steps, random_seed=random_seed,
         )
 
@@ -132,9 +119,10 @@ def _sample_nuts_with_fallback(
     random_seed: int,
 ) -> tuple[az.InferenceData, str]:
     """Try NUTS with two target-accept configurations; fall back to ADVI."""
+    s = constants.INFERENCE_SAMPLING
     attempts = [
-        {"target_accept": _NUTS_TARGET_ACCEPT_1, "init": _NUTS_INIT_METHOD},
-        {"target_accept": _NUTS_TARGET_ACCEPT_2, "init": _NUTS_INIT_METHOD},
+        {"target_accept": s.nuts_target_accept_1, "init": s.nuts_init_method},
+        {"target_accept": s.nuts_target_accept_2, "init": s.nuts_init_method},
     ]
     last_error: Exception | None = None
 
@@ -159,7 +147,7 @@ def _sample_nuts_with_fallback(
     if last_error is not None:
         print(f"Last NUTS error: {last_error}")
     idata, _ = _sample_advi(
-        model, advi_steps=max(advi_steps, _ADVI_STEPS_MIN_FALLBACK),
+        model, advi_steps=max(advi_steps, constants.INFERENCE_SAMPLING.advi_steps_min_fallback),
         draws=draws, random_seed=random_seed,
     )
     return idata, "advi-fallback"
@@ -195,7 +183,7 @@ def _save_netcdf_with_retry(idata: az.InferenceData, output_path: Path) -> Path:
     """Write NetCDF; on Windows file-lock error fall back to a timestamped artifact."""
     lock_error: OSError | None = None
 
-    for attempt in range(1, _SAVE_RETRY_ATTEMPTS + 1):
+    for attempt in range(1, constants.INFERENCE_SAMPLING.save_retry_attempts + 1):
         try:
             idata.to_netcdf(str(output_path))
             print(f"[OK] Posterior saved to {output_path}")
@@ -204,7 +192,7 @@ def _save_netcdf_with_retry(idata: az.InferenceData, output_path: Path) -> Path:
             if "unable to lock file" not in str(exc).lower():
                 raise
             lock_error = exc
-            print(f"[WARN] File lock on {output_path} (attempt {attempt}/{_SAVE_RETRY_ATTEMPTS}). Retrying...")
+            print(f"[WARN] File lock on {output_path} (attempt {attempt}/{constants.INFERENCE_SAMPLING.save_retry_attempts}). Retrying...")
             time.sleep(attempt)
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)

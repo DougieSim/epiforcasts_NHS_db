@@ -1,7 +1,7 @@
 """
 Dashboard utility functions — constants, posterior helpers, and plot primitives.
 
-Pressure thresholds and domain constants are imported from core.utils so the
+Pressure thresholds and domain constants are sourced from core.constants so the
 dashboard never owns a separate definition. Visual / UI constants are defined
 here as the single source of truth for the dashboard layer.
 """
@@ -14,19 +14,23 @@ import numpy as np
 import pandas as pd
 import arviz as az
 
+import epiforcasts_nhs.core.constants as _cc
 from epiforcasts_nhs.core.utils import (
-    LATENT_BASELINE,
-    LATENT_SCALE,
-    LOOKBACK_WEEKS,
-    MONTH_TO_SEASON,
-    N_SEASONS,
-    SEASON_NAMES,
-    THRESHOLD_BASELINE,
-    THRESHOLD_CONCERN,
-    THRESHOLD_ELEVATED,
     current_pressure_samples,
     current_total_pressure_samples,
 )
+
+# Unpack core constants as flat names — preserves the re-export facade
+# so all dashboard modules can keep importing from dashboard.utils unchanged.
+LATENT_BASELINE    = _cc.LATENT_SCALE.baseline
+LATENT_SCALE       = _cc.LATENT_SCALE.scale
+LOOKBACK_WEEKS     = _cc.SUMMARY.lookback_weeks
+MONTH_TO_SEASON    = _cc.SEASONS.month_to_season
+N_SEASONS          = _cc.SEASONS.n_seasons
+SEASON_NAMES       = _cc.SEASONS.names
+THRESHOLD_BASELINE = _cc.PRESSURE_THRESHOLDS.baseline
+THRESHOLD_CONCERN  = _cc.PRESSURE_THRESHOLDS.concern
+THRESHOLD_ELEVATED = _cc.PRESSURE_THRESHOLDS.elevated
 
 # Re-export so dashboard modules only need one import target.
 __all__ = [

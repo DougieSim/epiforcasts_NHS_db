@@ -1,8 +1,7 @@
 """
-Utility functions and constants for the Bayesian pressure model.
+Utility functions for the Bayesian pressure model.
 
-Covers latent-scale parameters, pressure thresholds, season mapping,
-data preparation, encoding, and clinical summary extraction.
+Covers data preparation, encoding, season mapping, and posterior extraction.
 """
 
 from __future__ import annotations
@@ -11,58 +10,7 @@ import numpy as np
 import pandas as pd
 import arviz as az
 
-# ─────────────────────────────────────────
-# Latent ↔ occupancy scale
-# ─────────────────────────────────────────
-
-# Bed occupancy = LATENT_BASELINE + latent_pressure * LATENT_SCALE
-# At latent = 0 → 85% occupancy; one latent unit ≈ 6% occupancy.
-# Note: the DGP in data.generator uses (84, 7) — intentional misspecification.
-LATENT_BASELINE: float = 85.0
-LATENT_SCALE:    float = 6.0
-
-
-# ─────────────────────────────────────────
-# Pressure thresholds (latent scale)
-# ─────────────────────────────────────────
-
-# Demo cut-points only — not NHS operational thresholds.
-# Used by the model (core), cache, and dashboard; defined here once so core
-# modules never need to import from the dashboard layer.
-THRESHOLD_BASELINE: float = 0.0
-THRESHOLD_CONCERN:  float = 0.5
-THRESHOLD_ELEVATED: float = 1.1
-
-
-# ─────────────────────────────────────────
-# Clinical summary parameters
-# ─────────────────────────────────────────
-
-# Credible interval bounds used in pressure_summary (80% CI)
-PRESSURE_CI_LOWER_PCT: float = 10.0
-PRESSURE_CI_UPPER_PCT: float = 90.0
-
-# Default lookback window for direction-of-travel calculations
-LOOKBACK_WEEKS: int = 4
-
-# Weeks shown in the season-alignment console check
-SEASON_ALIGNMENT_DISPLAY_WEEKS: int = 8
-
-
-# ─────────────────────────────────────────
-# Season constants
-# ─────────────────────────────────────────
-
-SEASON_NAMES: list[str] = ["Winter", "Spring", "Summer", "Autumn"]
-N_SEASONS:    int        = 4
-
-# Calendar month → season index: 0=Winter, 1=Spring, 2=Summer, 3=Autumn
-MONTH_TO_SEASON: dict[int, int] = {
-    12: 0, 1: 0, 2: 0,
-     3: 1, 4: 1, 5: 1,
-     6: 2, 7: 2, 8: 2,
-     9: 3, 10: 3, 11: 3,
-}
+import epiforcasts_nhs.core.constants as constants
 
 
 # ─────────────────────────────────────────
@@ -111,7 +59,7 @@ def encode(df: pd.DataFrame) -> dict:
         else:
             month_resolved.append((_START_DATE + _td(weeks=int(week_vals[i]))).month)
 
-    season_idx = np.array([MONTH_TO_SEASON[m] for m in month_resolved])
+    season_idx = np.array([constants.SEASONS.month_to_season[m] for m in month_resolved])
 
     return dict(
         icb_codes=icb_codes,
@@ -130,15 +78,16 @@ def check_season_alignment(enc: dict, df: pd.DataFrame) -> None:
     week_idx   = enc["week_idx"]
     season_idx = enc["season_idx"]
     has_date   = "week_date" in df.columns
+    n_display  = constants.SUMMARY.season_alignment_display_weeks
 
-    print("Season alignment check (first %d weeks):" % SEASON_ALIGNMENT_DISPLAY_WEEKS)
-    for w in range(min(SEASON_ALIGNMENT_DISPLAY_WEEKS, enc["n_weeks"])):
+    print("Season alignment check (first %d weeks):" % n_display)
+    for w in range(min(n_display, enc["n_weeks"])):
         mask = np.where(week_idx == w)[0]
         if len(mask) == 0:
             continue
         s        = int(season_idx[mask[0]])
         date_str = f"  ({df['week_date'].values[mask[0]]})" if has_date else ""
-        print(f"  Week {min_week + w}{date_str}: {SEASON_NAMES[s]}")
+        print(f"  Week {min_week + w}{date_str}: {constants.SEASONS.names[s]}")
 
 
 def current_season_from_enc(enc: dict) -> int:
@@ -173,14 +122,14 @@ def current_total_pressure_samples(
     current_season : 0=Winter, 1=Spring, 2=Summer, 3=Autumn
     """
     level          = current_pressure_samples(idata, icb_idx)
-    season_effects = idata.posterior["season_effects"].values.reshape(-1, N_SEASONS)
+    season_effects = idata.posterior["season_effects"].values.reshape(-1, constants.SEASONS.n_seasons)
     return level + season_effects[:, current_season]
 
 
 def direction_of_travel(
     idata: az.InferenceData,
     icb_idx: int,
-    lookback_weeks: int = LOOKBACK_WEEKS,
+    lookback_weeks: int = constants.SUMMARY.lookback_weeks,
 ) -> np.ndarray:
     """
     Posterior samples for change in underlying level over the last N weeks.
@@ -195,7 +144,7 @@ def direction_of_travel(
 def pressure_summary(
     idata: az.InferenceData,
     enc: dict,
-    lookback_weeks: int = LOOKBACK_WEEKS,
+    lookback_weeks: int = constants.SUMMARY.lookback_weeks,
     current_season: int = 0,
 ) -> pd.DataFrame:
     """
@@ -204,6 +153,10 @@ def pressure_summary(
     Columns: icb, pressure_median, pressure_lo, pressure_hi, bed_occ_median,
              p_above_concern, p_above_high, dot_median, p_rising
     """
+    ls = constants.LATENT_SCALE
+    th = constants.PRESSURE_THRESHOLDS
+    ci = constants.SUMMARY
+
     rows = []
     for i, icb_name in enumerate(enc["categories"]):
         level_samples = current_pressure_samples(idata, i)
@@ -213,11 +166,11 @@ def pressure_summary(
         rows.append(dict(
             icb=icb_name,
             pressure_median=float(np.median(level_samples)),
-            pressure_lo=float(np.percentile(level_samples, PRESSURE_CI_LOWER_PCT)),
-            pressure_hi=float(np.percentile(level_samples, PRESSURE_CI_UPPER_PCT)),
-            bed_occ_median=float(LATENT_BASELINE + np.median(total_samples) * LATENT_SCALE),
-            p_above_concern=float(np.mean(total_samples > THRESHOLD_CONCERN)),
-            p_above_high=float(np.mean(total_samples > THRESHOLD_ELEVATED)),
+            pressure_lo=float(np.percentile(level_samples, ci.ci_lower_pct)),
+            pressure_hi=float(np.percentile(level_samples, ci.ci_upper_pct)),
+            bed_occ_median=float(ls.baseline + np.median(total_samples) * ls.scale),
+            p_above_concern=float(np.mean(total_samples > th.concern)),
+            p_above_high=float(np.mean(total_samples > th.elevated)),
             dot_median=float(np.median(dot)),
             p_rising=float(np.mean(dot > 0)),
         ))

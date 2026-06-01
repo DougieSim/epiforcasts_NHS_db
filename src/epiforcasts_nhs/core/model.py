@@ -20,11 +20,8 @@ import numpy as np
 import pandas as pd
 import arviz as az
 
+import epiforcasts_nhs.core.constants as constants
 from epiforcasts_nhs.core.utils import (
-    LATENT_BASELINE,
-    LATENT_SCALE,
-    N_SEASONS,
-    SEASON_NAMES,
     check_season_alignment,
     current_season_from_enc,
     encode,
@@ -32,30 +29,6 @@ from epiforcasts_nhs.core.utils import (
     pressure_summary,
 )
 from epiforcasts_nhs.config import DEFAULT_RANDOM_SEED
-
-# ─────────────────────────────────────────
-# Sampling configuration
-# ─────────────────────────────────────────
-
-_DRAWS_FAST       = 400
-_TUNE_FAST        = 400
-_DRAWS_FULL       = 2000
-_TUNE_FULL        = 2000
-_MCMC_CHAINS      = 4
-_MCMC_CORES       = 4
-_NUTS_TARGET_ACCEPT = 0.95
-
-# ─────────────────────────────────────────
-# Model prior parameters
-# ─────────────────────────────────────────
-
-_PRIOR_MU_NATIONAL_SD    = 1.0
-_PRIOR_SIGMA_ICB_RATE    = 1.0
-_PRIOR_RHO_ALPHA         = 2.0   # Beta(2,2) — symmetric, data-driven persistence
-_PRIOR_RHO_BETA          = 2.0
-_PRIOR_SIGMA_DRIFT_LAM   = 1.0
-_PRIOR_SIGMA_SEASON_LAM  = 5.0
-_PRIOR_SIGMA_OBS_LAM     = 5.0
 
 _FAST = os.environ.get("PRESSURE_MODEL_FAST", "1").strip().lower() not in ("0", "false", "no")
 
@@ -75,13 +48,16 @@ def build_model(enc: dict) -> pm.Model:
     n_icb      = enc["n_icb"]
     n_weeks    = enc["n_weeks"]
 
+    p  = constants.MODEL_PRIORS
+    ls = constants.LATENT_SCALE
+
     with pm.Model() as model:
-        mu_national = pm.Normal("mu_national", 0, _PRIOR_MU_NATIONAL_SD)
-        sigma_icb   = pm.Exponential("sigma_icb", _PRIOR_SIGMA_ICB_RATE)
-        rho         = pm.Beta("rho", alpha=_PRIOR_RHO_ALPHA, beta=_PRIOR_RHO_BETA)
+        mu_national = pm.Normal("mu_national", 0, p.mu_national_sd)
+        sigma_icb   = pm.Exponential("sigma_icb", p.sigma_icb_rate)
+        rho         = pm.Beta("rho", alpha=p.rho_alpha, beta=p.rho_beta)
 
         level_init  = pm.Normal("level_init", mu=mu_national, sigma=sigma_icb, shape=n_icb)
-        sigma_drift = pm.Exponential("sigma_drift", lam=_PRIOR_SIGMA_DRIFT_LAM)
+        sigma_drift = pm.Exponential("sigma_drift", lam=p.sigma_drift_lam)
         innovations = pm.Normal("innovations", 0, sigma_drift, shape=(n_weeks - 1, n_icb))
 
         levels_rest = pytensor.scan(
@@ -96,13 +72,13 @@ def build_model(enc: dict) -> pm.Model:
             pt.concatenate([level_init[None, :], levels_rest], axis=0),
         )  # (n_weeks, n_icb)
 
-        sigma_season   = pm.Exponential("sigma_season", lam=_PRIOR_SIGMA_SEASON_LAM)
-        season_raw     = pm.Normal("season_raw", 0, sigma_season, shape=N_SEASONS)
+        sigma_season   = pm.Exponential("sigma_season", lam=p.sigma_season_lam)
+        season_raw     = pm.Normal("season_raw", 0, sigma_season, shape=constants.SEASONS.n_seasons)
         season_effects = pm.Deterministic("season_effects", season_raw - pt.mean(season_raw))
 
         latent    = level[week_idx, icb_codes] + season_effects[season_idx]
-        sigma_obs = pm.Exponential("sigma_obs", lam=_PRIOR_SIGMA_OBS_LAM)
-        pm.Normal("bed_obs", mu=LATENT_BASELINE + latent * LATENT_SCALE, sigma=sigma_obs, observed=beds)
+        sigma_obs = pm.Exponential("sigma_obs", lam=p.sigma_obs_lam)
+        pm.Normal("bed_obs", mu=ls.baseline + latent * ls.scale, sigma=sigma_obs, observed=beds)
 
     return model
 
@@ -117,11 +93,12 @@ def sample_prior(model: pm.Model, draws: int = 100) -> az.InferenceData:
 
 
 def sample_posterior(model: pm.Model, draws: int, tune: int) -> az.InferenceData:
+    s = constants.MODEL_SAMPLING
     with model:
         return pm.sample(
             draws=draws, tune=tune,
-            chains=_MCMC_CHAINS, cores=_MCMC_CORES,
-            target_accept=_NUTS_TARGET_ACCEPT,
+            chains=s.chains, cores=s.cores,
+            target_accept=s.target_accept,
             progressbar=True, compute_convergence_checks=False,
         )
 
@@ -195,7 +172,8 @@ def fit_pressure_model(df: pd.DataFrame, *, fast: bool | None = None) -> tuple:
     """
     if fast is None:
         fast = _FAST
-    draws, tune = (_DRAWS_FAST, _TUNE_FAST) if fast else (_DRAWS_FULL, _TUNE_FULL)
+    s = constants.MODEL_SAMPLING
+    draws, tune = (s.draws_fast, s.tune_fast) if fast else (s.draws_full, s.tune_full)
 
     data = prepare_data(df)
     enc  = encode(data)
@@ -216,7 +194,7 @@ def fit_pressure_model(df: pd.DataFrame, *, fast: bool | None = None) -> tuple:
     ]))
 
     current_season = current_season_from_enc(enc)
-    print(f"\nCurrent season: {SEASON_NAMES[current_season]}")
+    print(f"\nCurrent season: {constants.SEASONS.names[current_season]}")
 
     summary = pressure_summary(idata, enc, current_season=current_season)
     print("\nClinical summary (ranked by current pressure):")
