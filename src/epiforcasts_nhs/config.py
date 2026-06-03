@@ -14,6 +14,7 @@ from pathlib import Path
 # ─────────────────────────────────────────
 
 WEEKLY_CSV         = Path("synthetic_nhs_pressure.csv")
+WEEKLY_CSV_ARCHIVE = Path("synthetic_nhs_pressure_all.csv")   # full historical record (never trimmed)
 PATIENT_CSV        = Path("synthetic_patient_episodes.csv")
 POSTERIORS_PATH    = Path("posteriors.nc")
 STAGED_POSTERIORS  = Path(".posteriors_new.nc")   # atomic-swap staging path

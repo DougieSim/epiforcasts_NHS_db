@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 import epiforcasts_nhs.data.constants as constants
+from epiforcasts_nhs.config import WEEKLY_CSV_ARCHIVE
 from epiforcasts_nhs.data.generator import build_weekly_icb_frame
 from epiforcasts_nhs.data.utils import england_aggregate
 
@@ -97,8 +98,19 @@ class SyntheticGenerator:
         self,
         new_week_df: pd.DataFrame,
         df: pd.DataFrame | None = None,
+        archive_path: Path | None = None,
     ) -> pd.DataFrame:
-        """Append a new week to the CSV and return the updated DataFrame."""
+        """
+        Append a new week, drop the earliest week from the rolling CSV, and
+        append the new week to the full historical archive.
+
+        The rolling CSV (self.csv_path) always stays the same length — one week
+        is added and one is removed — so the model's n_weeks remains stable run
+        to run.  The archive (archive_path or WEEKLY_CSV_ARCHIVE) accumulates
+        every week ever generated and is never trimmed.
+
+        Returns the updated rolling DataFrame (with the earliest week dropped).
+        """
         existing = pd.read_csv(self.csv_path) if df is None else df.copy()
         max_week = int(existing["week"].max())
         new_week = int(new_week_df["week"].iloc[0])
@@ -109,11 +121,26 @@ class SyntheticGenerator:
                 "Weeks must be strictly sequential."
             )
 
+        # ── Archive: append new week to the full history ──────────────────────
+        arc_path = Path(archive_path) if archive_path is not None else WEEKLY_CSV_ARCHIVE
+        if arc_path.exists():
+            archive = pd.read_csv(arc_path)
+            archive = pd.concat([archive, new_week_df], ignore_index=True)
+        else:
+            # First run: seed the archive with everything we have
+            archive = pd.concat([existing, new_week_df], ignore_index=True)
+        archive.to_csv(arc_path, index=False)
+        logger.info(f"Archive updated -> {arc_path} (weeks {archive['week'].min()}-{archive['week'].max()})")
+
+        # ── Rolling window: append new week then drop the oldest ──────────────
+        earliest_week = int(existing["week"].min())
         updated = pd.concat([existing, new_week_df], ignore_index=True)
+        updated = updated[updated["week"] != earliest_week].reset_index(drop=True)
         updated.to_csv(self.csv_path, index=False)
         logger.info(
             f"Saved week {new_week} -> {self.csv_path} "
-            f"(total weeks: {updated['week'].min()}-{updated['week'].max()})"
+            f"(dropped week {earliest_week}, rolling window: "
+            f"{updated['week'].min()}-{updated['week'].max()})"
         )
         return updated
 

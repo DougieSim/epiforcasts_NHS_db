@@ -18,6 +18,7 @@ import epiforcasts_nhs.core.constants as _cc
 from epiforcasts_nhs.core.utils import (
     current_pressure_samples,
     current_total_pressure_samples,
+    direction_of_travel,
 )
 
 # Unpack core constants as flat names — preserves the re-export facade
@@ -49,12 +50,11 @@ __all__ = [
     "CI_80_LOWER", "CI_80_UPPER",
     "CI_DEFAULT_MASS",
     "BED_OCC_REF_CONCERN", "BED_OCC_REF_HIGH",
-    "KALMAN_CI_Z_90",
     # Helpers
     "credible_triplet", "current_season_index",
-    "pressure_index_samples", "level_only_samples", "seasonal_effect_samples",
+    "pressure_index_samples", "level_only_samples", "direction_of_travel", "seasonal_effect_samples",
     "resolve_icb_index", "risk_band", "pressure_colors", "dot_travel_colors",
-    "week_season_map", "season_per_week_samples", "kalman_filter",
+    "week_season_map", "season_per_week_samples",
 ]
 
 
@@ -103,9 +103,6 @@ CI_DEFAULT_MASS: float = 0.9
 # Bed-occupancy reference lines on charts (not thresholds — operational context only)
 BED_OCC_REF_CONCERN: float = 95.0   # amber: approaching strain
 BED_OCC_REF_HIGH:    float = 100.0  # red: at or beyond safe capacity
-
-# z-score for 90% normal interval used in the Kalman-filter trajectory CI
-KALMAN_CI_Z_90: float = 1.645
 
 
 # ─────────────────────────────────────────
@@ -235,33 +232,3 @@ def season_per_week_samples(season_f: np.ndarray, week_season: np.ndarray) -> np
     Returns (S, n_weeks).
     """
     return season_f[:, week_season]
-
-
-def kalman_filter(
-    obs_series: np.ndarray,
-    sigma_drift: float,
-    sigma_obs: float,
-    level_init: float = 0.0,
-    var_init: float = 1.0,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Forward Kalman filter for the local-level model.
-
-    Returns filtered_mean and filtered_std on the latent scale.
-    """
-    n                = len(obs_series)
-    filtered_mean    = np.zeros(n)
-    filtered_std     = np.zeros(n)
-    sigma_obs_latent = sigma_obs / LATENT_SCALE
-    m, v             = level_init, var_init
-
-    for t, bed_occ in enumerate(obs_series):
-        y_latent = (bed_occ - LATENT_BASELINE) / LATENT_SCALE
-        v_pred   = v + sigma_drift ** 2
-        k        = v_pred / (v_pred + sigma_obs_latent ** 2)
-        m        = m + k * (y_latent - m)
-        v        = (1 - k) * v_pred
-        filtered_mean[t] = m
-        filtered_std[t]  = np.sqrt(v)
-
-    return filtered_mean, filtered_std

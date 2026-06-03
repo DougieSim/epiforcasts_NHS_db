@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "epiforcasts-nhs"
+version = "0.1.0"
+description = "Probabilistic NHS Winter / System Pressure Early Warning"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "pymc",
+    "arviz",
+    "matplotlib",
+    "streamlit",
+    "xarray",
+    "h5netcdf",
+    "scikit-learn",
+    "pytensor",
+]
+
+[project.scripts]
+epiforcasts-create-initial-data = "epiforcasts_nhs.data.generator:main"
+epiforcasts-inference  = "epiforcasts_nhs.cli.inference:main"
+epiforcasts-daemon     = "epiforcasts_nhs.cli.daemon:main"
+epiforcasts-cache      = "epiforcasts_nhs.core.cache:main"
+epiforcasts-health     = "epiforcasts_nhs.ops.health:main"
+epiforcasts-acceptance = "epiforcasts_nhs.ops.acceptance:main"
+epiforcasts-evidence   = "epiforcasts_nhs.ops.evidence:main"
+epiforcasts-feedback   = "epiforcasts_nhs.ops.feedback:main"
+epiforcasts-covariate  = "epiforcasts_nhs.ops.covariate:main"
+epiforcasts-launch     = "epiforcasts_nhs.cli.launch:main"
+epiforcasts-resilient  = "epiforcasts_nhs.cli.run_resilient:main"
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/epiforcasts_nhs"]

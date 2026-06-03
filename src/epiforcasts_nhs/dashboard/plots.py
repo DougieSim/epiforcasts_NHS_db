@@ -18,7 +18,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import arviz as az
 
-from epiforcasts_nhs.core.utils import (
+from epiforcasts_nhs.dashboard.utils import (
     LATENT_BASELINE,
     LATENT_SCALE,
     LOOKBACK_WEEKS,
@@ -35,7 +35,6 @@ from epiforcasts_nhs.dashboard.utils import (
     CI_80_UPPER,
     CI_89_LOWER,
     CI_89_UPPER,
-    KALMAN_CI_Z_90,
     RISK_THRESHOLD_HIGH,
     RISK_THRESHOLD_MEDIUM,
     SEASON_COLORS,
@@ -43,7 +42,6 @@ from epiforcasts_nhs.dashboard.utils import (
     credible_triplet,
     current_season_index,
     dot_travel_colors,
-    kalman_filter,
     pressure_colors,
     seasonal_effect_samples,
     season_per_week_samples,
@@ -244,42 +242,39 @@ def fig_pressure_question(
 
 
 def fig_pressure_trajectory(idata: az.InferenceData, df: pd.DataFrame, icb: str) -> plt.Figure | None:
-    """Kalman-filtered pressure trajectory including seasonal component."""
+    """Posterior pressure trajectory including seasonal component."""
     icbs = list(idata.attrs.get("icbs", []))
     if icb not in icbs:
         return None
 
-    post        = idata.posterior
-    sigma_drift = float(post["sigma_drift"].mean())
-    sigma_obs   = float(post["sigma_obs"].mean())
-    level_init  = float(post["level_init"].mean(("chain", "draw")).values[icbs.index(icb)])
-    var_init    = float(post["sigma_icb"].mean()) ** 2
-
+    icb_idx  = icbs.index(icb)
     icb_df   = df[df["icb"] == icb].sort_values("week")
     obs_beds = icb_df["bed_occupancy"].values
     weeks    = icb_df["week"].values
     n_weeks  = len(weeks)
 
-    filtered_mean, filtered_std = kalman_filter(obs_beds, sigma_drift, sigma_obs, level_init, var_init)
+    # level: (chain, draw, n_weeks, n_icb) → (n_samples, n_weeks) for this ICB
+    level_samples = idata.posterior["level"].values[:, :, :n_weeks, icb_idx].reshape(-1, n_weeks)
 
-    season_mean = seasonal_effect_samples(idata).mean(axis=0)
-
+    # season effects: (n_samples, 4) → map to per-week (n_samples, n_weeks)
+    season_f = seasonal_effect_samples(idata)
     if "month" in icb_df.columns:
-        season_indices = [
+        season_indices = np.array([
             MONTH_TO_SEASON[int(m)] if pd.notna(m) else int(idx % 4)
-            for idx, (m, _) in enumerate(zip(icb_df["month"].values, weeks))
-        ]
-        season_week = season_mean[np.array(season_indices)]
+            for idx, m in enumerate(icb_df["month"].values)
+        ])
     else:
-        season_week = np.array([season_mean[int(i % 4)] for i in range(n_weeks)])
+        season_indices = np.array([int(i % 4) for i in range(n_weeks)])
+    season_week = season_f[:, season_indices]  # (n_samples, n_weeks)
 
-    occ_mean = LATENT_BASELINE + (filtered_mean + season_week) * LATENT_SCALE
-    occ_lo   = LATENT_BASELINE + (filtered_mean - KALMAN_CI_Z_90 * filtered_std + season_week) * LATENT_SCALE
-    occ_hi   = LATENT_BASELINE + (filtered_mean + KALMAN_CI_Z_90 * filtered_std + season_week) * LATENT_SCALE
+    occ_samples = LATENT_BASELINE + (level_samples + season_week) * LATENT_SCALE
+    occ_lo   = np.percentile(occ_samples, 5.0,  axis=0)
+    occ_mean = np.percentile(occ_samples, 50.0, axis=0)
+    occ_hi   = np.percentile(occ_samples, 95.0, axis=0)
 
     fig, ax = plt.subplots(figsize=(11, 3.5), layout="constrained")
-    ax.fill_between(weeks, occ_lo, occ_hi, alpha=0.25, color="#1d4ed8", label="90% filtered CI")
-    ax.plot(weeks, occ_mean, color="#1d4ed8", linewidth=1.8, label="Filtered estimate (incl. season)")
+    ax.fill_between(weeks, occ_lo, occ_hi, alpha=0.25, color="#1d4ed8", label="90% posterior CI")
+    ax.plot(weeks, occ_mean, color="#1d4ed8", linewidth=1.8, label="Posterior median (incl. season)")
     ax.scatter(weeks, obs_beds, s=8, color="#0f172a", alpha=0.45, label="Observed", zorder=3)
     ax.axhline(BED_OCC_REF_CONCERN, color="#d97706", linestyle="--", linewidth=1, alpha=0.8,
                label=f"{BED_OCC_REF_CONCERN:.0f}% reference")
@@ -288,10 +283,7 @@ def fig_pressure_trajectory(idata: az.InferenceData, df: pd.DataFrame, icb: str)
     ax.axvline(weeks[-1], color="#64748b", linestyle=":", linewidth=1.2, alpha=0.8,
                label=f"Latest (week {weeks[-1]})")
     ax.set_ylabel("Bed occupancy (%)"); ax.set_xlabel("Week")
-    ax.set_title(
-        f"Filtered pressure trajectory — {icb}  "
-        "(CI widens at early weeks, narrows as evidence accumulates)", fontsize=11,
-    )
+    ax.set_title(f"Posterior pressure trajectory — {icb}", fontsize=11)
     ax.legend(fontsize=8, loc="upper left")
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
     return fig

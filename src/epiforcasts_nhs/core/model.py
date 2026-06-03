@@ -55,22 +55,19 @@ def build_model(enc: dict) -> pm.Model:
         mu_national = pm.Normal("mu_national", 0, p.mu_national_sd)
         sigma_icb   = pm.Exponential("sigma_icb", p.sigma_icb_rate)
         rho         = pm.Beta("rho", alpha=p.rho_alpha, beta=p.rho_beta)
-
-        level_init  = pm.Normal("level_init", mu=mu_national, sigma=sigma_icb, shape=n_icb)
         sigma_drift = pm.Exponential("sigma_drift", lam=p.sigma_drift_lam)
-        innovations = pm.Normal("innovations", 0, sigma_drift, shape=(n_weeks - 1, n_icb))
 
-        levels_rest = pytensor.scan(
-            fn=lambda innov, prev, rho: rho * prev + innov,
-            sequences=innovations,
-            outputs_info=level_init,
-            non_sequences=rho,
-            return_updates=False,
-        )
-        level = pm.Deterministic(
-            "level",
-            pt.concatenate([level_init[None, :], levels_rest], axis=0),
-        )  # (n_weeks, n_icb)
+        level_ar = pm.AR(
+                    "level_ar",
+                    rho=rho,                                          
+                    sigma=sigma_drift,                                
+                    init_dist=pm.Normal.dist(mu_national, sigma_icb,
+                                            shape=(n_icb, 1)),       
+                    constant=False,                                   
+                    ar_order=1,
+                    shape=(n_icb, n_weeks),
+                )
+        level = pm.Deterministic("level", level_ar.T)
 
         sigma_season   = pm.Exponential("sigma_season", lam=p.sigma_season_lam)
         season_raw     = pm.Normal("season_raw", 0, sigma_season, shape=constants.SEASONS.n_seasons)
