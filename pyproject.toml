@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 [project.scripts]
-# Unified click CLI — `epiforcasts <command>` (see cli/app.py).
-epiforcasts            = "epiforcasts_nhs.cli.app:cli"
+# Unified click CLI — `epiforcasts <command>` (see cli/cli.py).
+epiforcasts            = "epiforcasts_nhs.cli.cli:cli"
 # Individual entry points — kept for backward compatibility; each is the same
 # click command the unified group registers as a subcommand.
 epiforcasts-create-initial-data = "epiforcasts_nhs.data.generator:main"

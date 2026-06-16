@@ -227,7 +227,7 @@ EPISODE_CATEGORICALS = EpisodeCategoricals(
 # Note: the Bayesian model in core.model uses LATENT_BASELINE=85 / LATENT_SCALE=6,
 # which intentionally differ from the DGP — model misspecification is realistic.
 
-BED_OCC = BedOccParams(intercept=84.0, lp_scale=7.0, sea_scale=4.0, noise_sd=3.0, clip_lo=70.0, clip_hi=100.0)
+BED_OCC = BedOccParams(intercept=84.0, lp_scale=7.0, sea_scale=4.0, noise_sd=1.0, clip_lo=0.0, clip_hi=1000.0)
 
 
 # ─────────────────────────────────────────

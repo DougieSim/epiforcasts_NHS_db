@@ -76,6 +76,8 @@ uv run epiforcasts health
 All commands are subcommands of the unified `epiforcasts` CLI — run
 `uv run epiforcasts --help` for the full list. Each also has a standalone
 `epiforcasts-*` console script (e.g. `uv run epiforcasts-inference --fast`).
+Full per-command options and examples are in the
+[CLI reference](docs/cli/README.md).
 
 ## Environment reliability notes
 

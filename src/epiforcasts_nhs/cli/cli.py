@@ -1,5 +1,5 @@
 """
-Unified click CLI — `epiforcasts <command>`.
+Unified click CLI entry point — `epiforcasts <command>`.
 
 Aggregates every individual entry point (each its own click command, also
 exposed as a standalone `epiforcasts-*` console script) into one group, and
