@@ -1,16 +1,3 @@
-"""
-CLI entry point — dashboard launcher.
-
-Launches the Streamlit dashboard (full or fast variant) with automatic port
-fallback. Historically this tried Pixi first and fell back to a direct Python
-launch; with the move to uv there is a single launch path.
-
-Usage:
-    epiforcasts-dashboard
-    epiforcasts-dashboard --fast
-    epiforcasts-dashboard --fast --preferred-port 8502
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

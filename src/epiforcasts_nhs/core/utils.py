@@ -72,22 +72,6 @@ def encode(df: pd.DataFrame) -> dict:
     )
 
 
-def check_season_alignment(enc: dict, df: pd.DataFrame) -> None:
-    """Print season and date for the first N weeks as a sanity check."""
-    min_week   = df["week"].min()
-    week_idx   = enc["week_idx"]
-    season_idx = enc["season_idx"]
-    has_date   = "week_date" in df.columns
-    n_display  = constants.SUMMARY.season_alignment_display_weeks
-
-    print("Season alignment check (first %d weeks):" % n_display)
-    for w in range(min(n_display, enc["n_weeks"])):
-        mask = np.where(week_idx == w)[0]
-        if len(mask) == 0:
-            continue
-        s        = int(season_idx[mask[0]])
-        date_str = f"  ({df['week_date'].values[mask[0]]})" if has_date else ""
-        print(f"  Week {min_week + w}{date_str}: {constants.SEASONS.names[s]}")
 
 
 def current_season_from_enc(enc: dict) -> int:
@@ -176,3 +160,154 @@ def pressure_summary(
         ))
 
     return pd.DataFrame(rows).sort_values("pressure_median", ascending=False)
+
+
+# ─────────────────────────────────────────
+# Forward projection — weeks to occupancy thresholds
+# ─────────────────────────────────────────
+
+def threshold_occupancies() -> dict[str, float]:
+    """
+    The three occupancy (%) targets used for weeks-to-threshold projection.
+
+    "concern" and "elevated" are the model's latent PRESSURE_THRESHOLDS mapped to
+    occupancy via the latent scale; "capacity" is the 100% reference line.
+    """
+    ls = constants.LATENT_SCALE
+    th = constants.PRESSURE_THRESHOLDS
+    return {
+        "concern":  ls.baseline + th.concern * ls.scale,
+        "elevated": ls.baseline + th.elevated * ls.scale,
+        "capacity": 100.0,
+    }
+
+
+def future_season_indices(
+    horizon: int,
+    *,
+    last_date: "pd.Timestamp | None" = None,
+    current_season: int = 0,
+) -> np.ndarray:
+    """
+    Season index (0–3) for each of the next `horizon` weeks.
+
+    If a calendar `last_date` is given, advance the real calendar one week at a
+    time and map month → season. Otherwise fall back to equal-length season
+    blocks starting from `current_season`.
+    """
+    n = constants.SEASONS.n_seasons
+    if last_date is not None and pd.notna(last_date):
+        last_date = pd.Timestamp(last_date)
+        months = [(last_date + pd.Timedelta(weeks=k)).month for k in range(1, horizon + 1)]
+        return np.array([constants.SEASONS.month_to_season[m] for m in months], dtype=int)
+
+    wps = constants.FORECAST.weeks_per_season
+    return np.array([(current_season + (k // wps)) % n for k in range(1, horizon + 1)], dtype=int)
+
+
+def forward_simulate_occupancy(
+    idata: az.InferenceData,
+    icb_idx: int,
+    future_seasons: np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Forward-simulate expected bed occupancy (%) for one ICB.
+
+    Propagates the model's own AR(1) dynamics from the posterior draws:
+        level_{k} = rho * level_{k-1} + Normal(0, sigma_drift)
+    (no drift term — the process mean-reverts to 0, so crossings arise from the
+    sigma_drift innovations rather than a fictitious linear trend), then maps
+    level + seasonal effect to occupancy via the latent scale.
+
+    Returns an array of shape (n_samples, horizon) of expected occupancy %.
+    Uses the expected occupancy (no sigma_obs observation noise), consistent
+    with how thresholds are applied in `pressure_summary`.
+    """
+    ls = constants.LATENT_SCALE
+    post = idata.posterior
+
+    rho         = post["rho"].values.reshape(-1)
+    sigma_drift = post["sigma_drift"].values.reshape(-1)
+    level       = post["level"].values
+    level_last  = level[:, :, -1, icb_idx].reshape(-1).astype(float)
+    season_f    = post["season_effects"].values.reshape(-1, constants.SEASONS.n_seasons)
+
+    n_samples = level_last.shape[0]
+    horizon   = len(future_seasons)
+    occ       = np.empty((n_samples, horizon), dtype=float)
+
+    lvl = level_last
+    for k in range(horizon):
+        lvl = rho * lvl + rng.normal(0.0, sigma_drift)
+        season_k   = season_f[:, future_seasons[k]]
+        occ[:, k]  = ls.baseline + (lvl + season_k) * ls.scale
+
+    return occ
+
+
+def weeks_to_thresholds(
+    occ_samples: np.ndarray,
+    current_occ_median: float,
+    targets: dict[str, float],
+) -> dict[str, dict]:
+    """
+    First-passage weeks to each occupancy target from forward-simulated paths.
+
+    Parameters
+    ----------
+    occ_samples        : (n_samples, horizon) forward-simulated occupancy %.
+    current_occ_median : current median occupancy % (for the "already above" case).
+    targets            : mapping of target name → occupancy % cut-point.
+
+    Returns, per target name, a dict with:
+        weeks    : int median first-passage week, 0 if already above, or None if
+                   fewer than half the samples cross within the horizon.
+        p_within : posterior probability of crossing within the horizon.
+        already  : True if current median occupancy is already at/above the target.
+    """
+    horizon = occ_samples.shape[1]
+    out: dict[str, dict] = {}
+    for name, target in targets.items():
+        if current_occ_median >= target:
+            out[name] = {"weeks": 0, "p_within": 1.0, "already": True}
+            continue
+
+        crossed   = occ_samples >= target           # (S, horizon)
+        any_cross = crossed.any(axis=1)
+        first_idx = crossed.argmax(axis=1) + 1       # 1-based week; meaningless where no cross
+        weeks_arr = np.where(any_cross, first_idx, np.inf)
+
+        p_within = float(any_cross.mean())
+        median_w = float(np.median(weeks_arr))
+        weeks    = int(median_w) if np.isfinite(median_w) else None
+
+        out[name] = {"weeks": weeks, "p_within": p_within, "already": False}
+    return out
+
+
+def project_weeks_to_thresholds(
+    idata: az.InferenceData,
+    icb_idx: int,
+    current_season: int,
+    *,
+    last_date: "pd.Timestamp | None" = None,
+    horizon: int | None = None,
+) -> dict[str, dict]:
+    """
+    Convenience wrapper: forward-simulate one ICB and return weeks-to-threshold
+    for the standard concern / elevated / capacity occupancy targets.
+    """
+    horizon = horizon or constants.FORECAST.horizon_weeks
+    rng     = np.random.default_rng(constants.FORECAST.seed)
+
+    future_seasons = future_season_indices(
+        horizon, last_date=last_date, current_season=current_season
+    )
+    occ = forward_simulate_occupancy(idata, icb_idx, future_seasons, rng)
+
+    total_now = current_total_pressure_samples(idata, icb_idx, current_season)
+    current_occ_median = float(constants.LATENT_SCALE.baseline
+                               + np.median(total_now) * constants.LATENT_SCALE.scale)
+
+    return weeks_to_thresholds(occ, current_occ_median, threshold_occupancies())

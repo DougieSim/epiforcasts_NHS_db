@@ -1,12 +1,3 @@
-"""
-CLI entry point — Streamlit launcher with automatic port fallback.
-
-Usage:
-    epiforcasts-launch
-    epiforcasts-launch --app src/epiforcasts_nhs/dashboard/app_fast.py
-    epiforcasts-launch --preferred-port 8502 --max-port 8520
-"""
-
 from __future__ import annotations
 
 import subprocess

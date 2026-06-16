@@ -1,16 +1,3 @@
-"""
-CLI entry point — inference daemon.
-
-Parses arguments and delegates to core.pipeline.
-
-Usage:
-    epiforcasts-daemon --once
-    epiforcasts-daemon --interval-hours 1
-    epiforcasts-daemon --generate-only
-    epiforcasts-daemon --infer-only
-    epiforcasts-daemon --fast
-"""
-
 from __future__ import annotations
 
 import logging

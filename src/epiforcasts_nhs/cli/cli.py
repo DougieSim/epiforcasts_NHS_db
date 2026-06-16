@@ -1,14 +1,3 @@
-"""
-Unified click CLI entry point — `epiforcasts <command>`.
-
-Aggregates every individual entry point (each its own click command, also
-exposed as a standalone `epiforcasts-*` console script) into one group, and
-adds the composite workflows that used to be Pixi tasks (`full-pipeline`,
-`dev`).
-
-Run `epiforcasts --help` to list commands.
-"""
-
 from __future__ import annotations
 
 import click

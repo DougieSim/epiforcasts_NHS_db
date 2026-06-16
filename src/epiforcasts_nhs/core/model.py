@@ -22,7 +22,6 @@ import arviz as az
 
 import epiforcasts_nhs.core.constants as constants
 from epiforcasts_nhs.core.utils import (
-    check_season_alignment,
     current_season_from_enc,
     encode,
     prepare_data,
@@ -79,11 +78,6 @@ def build_model(enc: dict) -> pm.Model:
 
     return model
 
-
-# ─────────────────────────────────────────
-# Sampling
-# ─────────────────────────────────────────
-
 def sample_prior(model: pm.Model, draws: int = 100) -> az.InferenceData:
     with model:
         return pm.sample_prior_predictive(draws=draws, random_seed=rng)
@@ -105,10 +99,6 @@ def sample_posterior_predictive(model: pm.Model, idata: az.InferenceData) -> az.
         pm.sample_posterior_predictive(idata, extend_inferencedata=True)
     return idata
 
-
-# ─────────────────────────────────────────
-# Persistence
-# ─────────────────────────────────────────
 
 def save_posteriors(idata: az.InferenceData, enc: dict, path: str = "posteriors.nc") -> None:
     """Save posteriors to NetCDF with a Windows-safe atomic swap."""
@@ -154,10 +144,6 @@ def save_posteriors(idata: az.InferenceData, enc: dict, path: str = "posteriors.
         raise
 
 
-# ─────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────
-
 def fit_pressure_model(df: pd.DataFrame, *, fast: bool | None = None) -> tuple:
     """
     Full inference pipeline: prepare → encode → build → sample → save.
@@ -174,11 +160,6 @@ def fit_pressure_model(df: pd.DataFrame, *, fast: bool | None = None) -> tuple:
 
     data = prepare_data(df)
     enc  = encode(data)
-
-    print(f"Rows:  {len(data)}")
-    print(f"Weeks: {data['week'].min()}-{data['week'].max()}")
-    print(f"ICBs:  {list(enc['categories'])}")
-    check_season_alignment(enc, data)
 
     model = build_model(enc)
     idata = sample_prior(model)
@@ -199,13 +180,3 @@ def fit_pressure_model(df: pd.DataFrame, *, fast: bool | None = None) -> tuple:
 
     save_posteriors(idata, enc)
     return model, idata, enc
-
-
-def main():
-    from epiforcasts_nhs.config import WEEKLY_CSV
-    df = pd.read_csv(WEEKLY_CSV)
-    fit_pressure_model(df)
-
-
-if __name__ == "__main__":
-    main()

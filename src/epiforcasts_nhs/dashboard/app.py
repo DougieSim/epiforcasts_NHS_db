@@ -15,6 +15,8 @@ from epiforcasts_nhs.dashboard.theme import inject_nhs_theme
 
 from epiforcasts_nhs.config import DASHBOARD_POLL_INTERVAL_S, POSTERIORS_PATH, STAGED_POSTERIORS, WEEKLY_CSV
 from epiforcasts_nhs.core.cache import CacheManager
+from epiforcasts_nhs.core.constants import FORECAST
+from epiforcasts_nhs.core.utils import project_weeks_to_thresholds, threshold_occupancies
 from epiforcasts_nhs.dashboard.utils import (
     DEFAULT_RISK_ELEVATED_TIER_MIN_P_CONCERN,
     DEFAULT_RISK_ELEVATED_TIER_MIN_P_HIGH,
@@ -61,6 +63,45 @@ def _england_pressure_samples(idata: az.InferenceData) -> np.ndarray:
     return (mean_level + season_f[:, season_now]).astype(float)
 
 
+def _fmt_weeks(info: dict) -> tuple[str, str]:
+    """Format one weeks-to-threshold result into (metric value, help text)."""
+    horizon = FORECAST.horizon_weeks
+    if info["already"]:
+        return "Now", "Current median occupancy is already at or above this level."
+    p = f"P(reach within {horizon} wks) = {info['p_within']:.0%}"
+    if info["weeks"] is None:
+        return "> 52wks", f"Not reached on current trajectory within {horizon} weeks. {p}."
+    return f"~{info['weeks']} wks", f"{p}."
+
+
+def _render_projection_metrics(
+    idata: az.InferenceData,
+    icb_names: list[str],
+    last_date,
+    season_now: int,
+) -> None:
+    """Metric boxes of projected weeks-to-threshold, one labelled row per ICB."""
+    targets = threshold_occupancies()
+    labels = {
+        "concern":  f"Concern (~{targets['concern']:.0f}%)",
+        "elevated": f"Elevated (~{targets['elevated']:.0f}%)",
+        "capacity": "Capacity (100%)",
+    }
+    multi = len(icb_names) > 1
+    for name in icb_names:
+        try:
+            idx = resolve_icb_index(idata, name)
+        except ValueError:
+            continue
+        proj = project_weeks_to_thresholds(idata, idx, season_now, last_date=last_date)
+        if multi:
+            st.markdown(f"**{name}**")
+        cols = st.columns(3)
+        for col, key in zip(cols, ("concern", "elevated", "capacity")):
+            value, help_text = _fmt_weeks(proj[key])
+            col.metric(labels[key], value, help=help_text)
+
+
 # ─────────────────────────────────────────
 # Cached loaders
 # ─────────────────────────────────────────
@@ -103,6 +144,7 @@ def _render_geography(
     credible_mass: float,
     show_median_line: bool,
     season_now_str: str,
+    last_date,
     pe_hi: float,
     pc_hi: float,
     pe_med: float,
@@ -180,6 +222,17 @@ The pressure index shown includes both the underlying AR(1) level and the curren
 contribution. Direction of travel is computed on the seasonal-adjusted level only.
         """)
     
+    st.markdown("---")
+    st.markdown("### Projected Time to Threshold")
+    st.caption(
+        "Probabilistic first-passage estimate from forward-simulating the model's "
+        f"AR(1) dynamics (including seasonality) over the next {FORECAST.horizon_weeks} "
+        "weeks. **Now** = already at/above the level; **—** = not reached on the current "
+        "trajectory within the horizon. Based on the underlying pressure level, not "
+        "noisy week-to-week readings."
+    )
+    _render_projection_metrics(idata, traj_icbs, last_date, current_season_index(idata))
+
     st.markdown("---")
     st.markdown("### Clinical Summary")
 
@@ -358,6 +411,14 @@ with st.sidebar:
 _all_icb_df   = df[df["icb"] != "England"]
 _main_area    = st.empty()
 
+# Last observed calendar date — used to advance seasons in forward projections.
+if "week_date" in _all_icb_df.columns:
+    _last_date = pd.to_datetime(_all_icb_df["week_date"], errors="coerce").max()
+    if pd.isna(_last_date):
+        _last_date = None
+else:
+    _last_date = None
+
 with _main_area.container():
 
     if selected_geo == "England":
@@ -400,6 +461,7 @@ with _main_area.container():
         credible_mass=credible_mass,
         show_median_line=show_median_line,
         season_now_str=season_now_str,
+        last_date=_last_date,
         pe_hi=pe_hi, pc_hi=pc_hi, pe_med=pe_med, pc_med=pc_med,
     )
 

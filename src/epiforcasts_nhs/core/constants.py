@@ -46,6 +46,14 @@ class SummaryParams:
 
 
 @dataclass(frozen=True)
+class ForecastParams:
+    """Parameters for the forward AR(1) weeks-to-threshold projection."""
+    horizon_weeks: int   # how far ahead to simulate first-passage crossings
+    seed: int            # RNG seed for reproducible forward simulation
+    weeks_per_season: int  # equal-season block length (fallback season stepping)
+
+
+@dataclass(frozen=True)
 class SeasonConfig:
     """Season names, count, and calendar month → season index mapping."""
     names: tuple[str, ...]
@@ -122,6 +130,12 @@ SUMMARY = SummaryParams(
 SEASONS = SeasonConfig(
     names=("Winter", "Spring", "Summer", "Autumn"),
     n_seasons=4,
+)
+
+FORECAST = ForecastParams(
+    horizon_weeks=52,
+    seed=42,
+    weeks_per_season=13,
 )
 
 MODEL_SAMPLING = ModelSamplingConfig(

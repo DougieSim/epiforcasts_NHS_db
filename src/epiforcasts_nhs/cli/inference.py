@@ -1,12 +1,3 @@
-"""
-CLI entry point — offline Bayesian inference.
-
-Parses arguments and delegates to core.inference.
-
-Usage:
-    epiforcasts-inference [--data-path FILE] [--output-path FILE] [--fast | --full]
-"""
-
 from __future__ import annotations
 
 import os

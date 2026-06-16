@@ -1,11 +1,3 @@
-"""
-CLI-layer utilities — port selection and subprocess helpers.
-
-These functions are inherently CLI-adjacent (they deal with OS processes,
-sockets, and shell invocation) and are not part of the library API. They
-are shared between cli.launch and cli.run_resilient.
-"""
-
 from __future__ import annotations
 
 import socket
