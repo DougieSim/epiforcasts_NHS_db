@@ -11,12 +11,16 @@ import json
 import shutil
 import sys
 
+import click
+
 from epiforcasts_nhs.config import POSTERIORS_PATH, WEEKLY_CSV
 from epiforcasts_nhs.core.cache import CacheManager
 from epiforcasts_nhs.ops.utils import fail, ok, warn
 
 
-def main() -> int:
+@click.command(name="health")
+def main() -> None:
+    """Run one-command local health checks for the demo."""
     failures = 0
 
     ok(f"Python executable: {sys.executable}")
@@ -56,10 +60,9 @@ def main() -> int:
 
     if failures:
         print(f"\nHealth check failed with {failures} blocking issue(s).")
-        return 1
+        raise SystemExit(1)
     print("\nHealth check passed.")
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

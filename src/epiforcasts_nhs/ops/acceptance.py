@@ -8,12 +8,11 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 from pathlib import Path
 
 import arviz as az
+import click
 
 from epiforcasts_nhs.config import (
     CI_METADATA_PATH,
@@ -31,12 +30,11 @@ _ROBUSTNESS_DOC = Path("docs/50-governance/ROBUSTNESS_TARGET_95.md")
 _GITIGNORE      = Path(".gitignore")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Run minimal robustness acceptance checks.")
-    parser.add_argument("--posterior", type=Path, default=CI_POSTERIORS_PATH)
-    parser.add_argument("--metadata",  type=Path, default=CI_METADATA_PATH)
-    args = parser.parse_args()
-
+@click.command(name="acceptance")
+@click.option("--posterior", type=click.Path(path_type=Path), default=CI_POSTERIORS_PATH, show_default=True)
+@click.option("--metadata",  type=click.Path(path_type=Path), default=CI_METADATA_PATH, show_default=True)
+def main(posterior: Path, metadata: Path) -> None:
+    """Run minimal robustness acceptance checks."""
     failures = 0
 
     failures += check(_LIFECYCLE_DOC.exists(),  "Lifecycle changelog document exists",     "Missing lifecycle changelog document")
@@ -56,16 +54,16 @@ def main() -> int:
             "Robustness plan missing acceptance section",
         )
 
-    failures += check(args.posterior.exists(), f"Posterior artifact exists: {args.posterior}", f"Posterior artifact missing: {args.posterior}")
-    failures += check(args.metadata.exists(),  f"Metadata artifact exists: {args.metadata}",   f"Metadata artifact missing: {args.metadata}")
+    failures += check(posterior.exists(), f"Posterior artifact exists: {posterior}", f"Posterior artifact missing: {posterior}")
+    failures += check(metadata.exists(),  f"Metadata artifact exists: {metadata}",   f"Metadata artifact missing: {metadata}")
 
-    if args.metadata.exists():
-        meta = json.loads(args.metadata.read_text(encoding="utf-8"))
+    if metadata.exists():
+        meta = json.loads(metadata.read_text(encoding="utf-8"))
         failures += check(int(meta.get("n_icbs", 0)) >= CI_MIN_ICBS, "Metadata has at least one ICB",              "Metadata n_icbs is invalid")
         failures += check(int(meta.get("n_obs",  0)) >= CI_MIN_OBS,  "Metadata has expected observation count floor", "Metadata n_obs below expected floor")
 
-    if args.posterior.exists():
-        idata = az.from_netcdf(str(args.posterior))
+    if posterior.exists():
+        idata = az.from_netcdf(str(posterior))
         attrs = dict(idata.attrs or {})
         draws = int(idata.posterior.sizes.get("draw", 0))
 
@@ -87,10 +85,9 @@ def main() -> int:
 
     if failures:
         print(f"\nAcceptance checks failed: {failures}")
-        return 1
+        raise SystemExit(1)
     print("\nAcceptance checks passed.")
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

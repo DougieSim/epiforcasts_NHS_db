@@ -179,7 +179,7 @@ This means:
 ### Check Status
 
 ```bash
-pixi run cache-status
+uv run epiforcasts cache status
 # Output:
 # ✓ Posteriors: posteriors.nc (2.4 MB)
 # Updated: 2026-04-23 14:30:00
@@ -192,7 +192,7 @@ pixi run cache-status
 ### Validate Before UI
 
 ```bash
-pixi run cache-check
+uv run epiforcasts cache check
 # Output: ✓ Cache is valid and ready
 # Exit code: 0
 ```
@@ -200,14 +200,14 @@ pixi run cache-check
 ### Force Warm
 
 ```bash
-pixi run cache-warm
+uv run epiforcasts cache warm
 # Useful if posteriors.nc exists but cache is missing
 ```
 
 ### Clear Cache (Keep Posteriors)
 
 ```bash
-pixi run cache-clear
+uv run epiforcasts cache clear
 # Clears .cache/ only
 # Posteriors.nc remains
 # UI will show error until cache is re-warmed
@@ -250,24 +250,24 @@ pixi run cache-clear
 
 **Q: Cache is missing**
 ```bash
-pixi run daemon-once  # Regenerates cache
+uv run epiforcasts daemon --once  # Regenerates cache
 # or
-pixi run cache-warm
+uv run epiforcasts cache warm
 ```
 
 **Q: Cache is stale**
 ```bash
 # Check age
-pixi run cache-status
+uv run epiforcasts cache status
 
 # Refresh
-pixi run daemon-once
+uv run epiforcasts daemon --once
 ```
 
 **Q: Dashboard still slow**
 ```bash
 # Verify cache is loaded
-pixi run cache-check
+uv run epiforcasts cache check
 
 # Check disk I/O
 ls -lh .cache/
@@ -279,6 +279,6 @@ time python -c "from cache_manager import CacheManager; CacheManager().load_summ
 **Q: Cache and posteriors out of sync**
 ```bash
 # Clear and regenerate
-pixi run cache-clear
-pixi run daemon-once
+uv run epiforcasts cache clear
+uv run epiforcasts daemon --once
 ```

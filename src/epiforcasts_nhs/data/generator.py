@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import click
 import numpy as np
 import pandas as pd
 
@@ -59,10 +60,9 @@ def _compute_indicators(
     ae       = _count(rng, c.AE, lp, n)
     elec_adm = _count(rng, c.ELEC_ADM, lp, n)
     acute    = _count(rng, c.ACUTE, lp, n)
-
     return {
         "resp_111_calls":                       rng.negative_binomial(c.RESP111_NB_SHAPE, 1 / (1 + np.exp(lp + seasonal))).astype(float),
-        "bed_occupancy":                        np.clip(c.BED_OCC.intercept + lp * c.BED_OCC.lp_scale + seasonal * c.BED_OCC.sea_scale + rng.normal(0, c.BED_OCC.noise_sd, n), c.BED_OCC.clip_lo, c.BED_OCC.clip_hi),
+        "bed_occupancy":                        c.BED_OCC.intercept + lp * c.BED_OCC.lp_scale + seasonal * c.BED_OCC.sea_scale + rng.normal(0, c.BED_OCC.noise_sd, n),
         "dtoc_patients":                        rng.poisson(np.maximum(c.DTOC.baseline + lp * c.DTOC.lp_coeff, 0)).astype(float),
         "ae_type1_attendances":                 ae.astype(float),
         "ed_4hr_breach_count":                  round_counts(np.maximum(0, ae * (c.ED4HR.base_rate + c.ED4HR.lp_coeff * np.tanh(lp) + rng.normal(0, c.ED4HR.noise_sd, n)))).astype(float),
@@ -229,7 +229,9 @@ def build_patient_episodes(
 # Entry point
 # ─────────────────────────────────────────
 
+@click.command(name="seed")
 def main() -> None:
+    """Build the initial synthetic weekly panel and patient-episode CSVs."""
     weekly_parts:  list[pd.DataFrame] = []
     episode_parts: list[pd.DataFrame] = []
 

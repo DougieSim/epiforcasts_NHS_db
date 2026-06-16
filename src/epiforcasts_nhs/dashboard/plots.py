@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import arviz as az
 
 from epiforcasts_nhs.dashboard.utils import (
@@ -149,7 +150,7 @@ def plot_pressure_trajectories(idata: az.InferenceData, enc: dict, df: pd.DataFr
         ax.scatter(obs["week"], obs["bed_occupancy"], s=6, color="black", alpha=0.4, label="Observed", zorder=3)
         ax.axhline(BED_OCC_REF_CONCERN, color="orange", linestyle="--", linewidth=1, alpha=0.7)
         ax.axhline(BED_OCC_REF_HIGH,    color="red",    linestyle="--", linewidth=1, alpha=0.7)
-        ax.set_ylabel("Bed occupancy (%)"); ax.set_title(icb_name)
+        ax.set_ylabel("Bed Demand (%)"); ax.set_title(icb_name)
         ax.legend(fontsize=7, loc="upper left")
 
     axes[-1].set_xlabel("Week")
@@ -251,6 +252,7 @@ def fig_pressure_trajectory(idata: az.InferenceData, df: pd.DataFrame, icb: str)
     icb_df   = df[df["icb"] == icb].sort_values("week")
     obs_beds = icb_df["bed_occupancy"].values
     weeks    = icb_df["week"].values
+    date = pd.to_datetime(icb_df["week_date"].values)
     n_weeks  = len(weeks)
 
     # level: (chain, draw, n_weeks, n_icb) → (n_samples, n_weeks) for this ICB
@@ -273,19 +275,23 @@ def fig_pressure_trajectory(idata: az.InferenceData, df: pd.DataFrame, icb: str)
     occ_hi   = np.percentile(occ_samples, 95.0, axis=0)
 
     fig, ax = plt.subplots(figsize=(11, 3.5), layout="constrained")
-    ax.fill_between(weeks, occ_lo, occ_hi, alpha=0.25, color="#1d4ed8", label="90% posterior CI")
-    ax.plot(weeks, occ_mean, color="#1d4ed8", linewidth=1.8, label="Posterior median (incl. season)")
-    ax.scatter(weeks, obs_beds, s=8, color="#0f172a", alpha=0.45, label="Observed", zorder=3)
+    ax.fill_between(date, occ_lo, occ_hi, alpha=0.25, color="#1d4ed8", label="90% posterior CI")
+    ax.plot(date, occ_mean, color="#1d4ed8", linewidth=1.8, label="Posterior median (incl. season)")
+    ax.scatter(date, obs_beds, s=8, color="#0f172a", alpha=0.45, label="Observed", zorder=3)
     ax.axhline(BED_OCC_REF_CONCERN, color="#d97706", linestyle="--", linewidth=1, alpha=0.8,
                label=f"{BED_OCC_REF_CONCERN:.0f}% reference")
     ax.axhline(BED_OCC_REF_HIGH, color="#b91c1c", linestyle="--", linewidth=1, alpha=0.8,
                label=f"{BED_OCC_REF_HIGH:.0f}% reference")
-    ax.axvline(weeks[-1], color="#64748b", linestyle=":", linewidth=1.2, alpha=0.8,
-               label=f"Latest (week {weeks[-1]})")
-    ax.set_ylabel("Bed occupancy (%)"); ax.set_xlabel("Week")
+    ax.axvline(date[-1], color="#64748b", linestyle=":", linewidth=1.2, alpha=0.8,
+               label=f"Latest ({date[-1]})")
+    ax.set_ylabel("Bed occupancy (%)"); ax.set_xlabel("Date")
+
     ax.set_title(f"Posterior pressure trajectory — {icb}", fontsize=11)
     ax.legend(fontsize=8, loc="upper left")
     ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    fig.autofmt_xdate()
     return fig
 
 

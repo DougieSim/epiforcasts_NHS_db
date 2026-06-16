@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+import click
 import numpy as np
 import arviz as az
 
@@ -225,34 +226,29 @@ class CacheManager:
         return sorted(self.icb_samples_path.glob("*.npy"))
 
 
-def main():
-    """CLI for cache management."""
-    import argparse
-    import sys
-
+@click.command(name="cache")
+@click.argument("command", type=click.Choice(["warm", "status", "clear", "check"]))
+@click.option("--posteriors", type=click.Path(path_type=Path), default=_DEFAULT_POSTERIORS_PATH, show_default=True)
+@click.option("--cache-dir",  type=click.Path(path_type=Path), default=_DEFAULT_CACHE_DIR, show_default=True)
+def main(command: str, posteriors: Path, cache_dir: Path) -> None:
+    """Cache management utility: warm | status | clear | check."""
     logging.basicConfig(level=logging.INFO)
 
-    parser = argparse.ArgumentParser(description="Cache management utility")
-    parser.add_argument("command", choices=["warm", "status", "clear", "check"])
-    parser.add_argument("--posteriors", type=Path, default=_DEFAULT_POSTERIORS_PATH)
-    parser.add_argument("--cache-dir",  type=Path, default=_DEFAULT_CACHE_DIR)
-    args = parser.parse_args()
+    cache = CacheManager(posteriors_path=posteriors, cache_dir=cache_dir)
 
-    cache = CacheManager(posteriors_path=args.posteriors, cache_dir=args.cache_dir)
-
-    if args.command == "warm":
+    if command == "warm":
         success = cache.warm_cache()
         print(cache.get_status_report())
-        sys.exit(0 if success else 1)
-    elif args.command == "status":
+        raise SystemExit(0 if success else 1)
+    elif command == "status":
         print(cache.get_status_report())
-    elif args.command == "check":
+    elif command == "check":
         if cache.is_valid():
             print("Cache is valid and ready")
         else:
             print("Cache invalid or incomplete")
-            sys.exit(1)
-    elif args.command == "clear":
+            raise SystemExit(1)
+    elif command == "clear":
         cache.clear_cache()
         print("Cache cleared")
 

@@ -47,11 +47,11 @@ idata = load_posteriors(POSTERIORS_NC, mtime)
 samples = _pressure_index_samples(idata, icb_idx)
 ```
 
-### Updated: `pixi.toml`
+### Updated: `pyproject.toml`
 
-Added tasks:
-- `run-inference` — calls `run_inference.py`
-- `run-full-pipeline` — generate → infer → dashboard in sequence
+Added commands (subcommands of the unified `epiforcasts` click CLI):
+- `epiforcasts inference` — runs offline Bayesian inference
+- `epiforcasts full-pipeline` — generate → infer → dashboard in sequence
 
 ### New: `inference_daemon.py`
 
@@ -96,7 +96,7 @@ Ultra-lightweight Streamlit UI for read-only posterior display.
 
 **Usage:**
 ```bash
-pixi run run-dashboard-fast
+uv run epiforcasts dashboard --fast
 
 # Or on custom port
 streamlit run app_fast.py --server.port 8502
@@ -115,9 +115,9 @@ streamlit run app_fast.py --server.port 8502
 
 ### Development
 ```bash
-pixi run generate-data
-pixi run run-inference
-pixi run run-dashboard
+uv run epiforcasts generate
+uv run epiforcasts inference --fast
+uv run epiforcasts dashboard
 ```
 
 ### Scheduled (Cloud/CI)
@@ -129,10 +129,10 @@ python run_inference.py --data-path s3://bucket/latest-data.csv --output-path po
 ### Production: Daemon + Fast Serving (Recommended)
 ```bash
 # Terminal 1: Continuous background inference (checks hourly for data updates)
-pixi run daemon
+uv run epiforcasts daemon
 
 # Terminal 2: Full interactive dashboard (port 8501)
-pixi run run-dashboard
+uv run epiforcasts dashboard
 
 # Terminal 3: Fast read-only view (port 8502)
 streamlit run app_fast.py --server.port 8502
@@ -148,20 +148,20 @@ Benefits:
 ```dockerfile
 # Dockerfile.inference
 FROM python:3.11
-RUN pixi install -e /app
-ENTRYPOINT ["pixi", "run", "daemon-once"]
+RUN pip install uv && uv sync --project /app
+ENTRYPOINT ["uv", "run", "--project", "/app", "epiforcasts", "daemon", "--once"]
 
 # Dockerfile.dashboard-full
 FROM python:3.11
 COPY posteriors.nc /app/posteriors.nc
-RUN pixi install streamlit arviz
-ENTRYPOINT ["streamlit", "run", "app.py"]
+RUN pip install uv && uv sync --project /app
+ENTRYPOINT ["uv", "run", "--project", "/app", "epiforcasts", "dashboard"]
 
 # Dockerfile.dashboard-fast
 FROM python:3.11
 COPY posteriors.nc /app/posteriors.nc
-RUN pixi install streamlit arviz
-ENTRYPOINT ["streamlit", "run", "app_fast.py"]
+RUN pip install uv && uv sync --project /app
+ENTRYPOINT ["uv", "run", "--project", "/app", "epiforcasts", "dashboard", "--fast"]
 ```
 
 Orchestration example (Kubernetes):
@@ -230,7 +230,7 @@ Please run `python run_inference.py` first to generate posteriors.
 
 2. **Scheduling**: Set up a cron or Lambda to run inference on a schedule:
    ```bash
-   0 2 * * * cd /path/to/repo && pixi run generate-data && pixi run run-inference
+   0 2 * * * cd /path/to/repo && uv run epiforcasts generate && uv run epiforcasts inference --fast
    ```
 
 3. **Monitoring**: Log posterior fits to a monitoring system (e.g., CloudWatch) to track drift or failures.

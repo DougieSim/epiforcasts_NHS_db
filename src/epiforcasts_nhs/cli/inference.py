@@ -9,11 +9,11 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 from pathlib import Path
 
+import click
 import pandas as pd
 
 from epiforcasts_nhs.config import (
@@ -25,43 +25,39 @@ from epiforcasts_nhs.config import (
 from epiforcasts_nhs.core.inference import fit_pressure_model, save_posterior_summaries
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Run offline Bayesian inference on the pressure model."
-    )
-    parser.add_argument("--data-path",   type=Path, default=WEEKLY_CSV)
-    parser.add_argument("--output-path", type=Path, default=POSTERIORS_PATH)
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--fast", action="store_true", help="ADVI fast path (default).")
-    mode.add_argument("--full", action="store_true", help="NUTS with retries / ADVI fallback.")
-    parser.add_argument("--seed",       type=int, default=DEFAULT_RANDOM_SEED)
-    parser.add_argument(
-        "--advi-steps",
-        type=int,
-        default=int(os.environ.get("PRESSURE_MODEL_ADVI_STEPS", str(DEFAULT_ADVI_STEPS))),
-    )
-    args = parser.parse_args()
-
-    if not args.data_path.exists():
-        print(f"[FAIL] Data file not found: {args.data_path}", file=sys.stderr)
+@click.command(name="inference")
+@click.option("--data-path", type=click.Path(path_type=Path), default=WEEKLY_CSV,
+              show_default=True, help="Input weekly panel CSV.")
+@click.option("--output-path", type=click.Path(path_type=Path), default=POSTERIORS_PATH,
+              show_default=True, help="Destination for posterior summaries.")
+@click.option("--fast/--full", "fast", default=True, show_default=True,
+              help="--fast: ADVI fast path.  --full: NUTS with retries / ADVI fallback.")
+@click.option("--seed", type=int, default=DEFAULT_RANDOM_SEED, show_default=True)
+@click.option("--advi-steps", type=int,
+              default=lambda: int(os.environ.get("PRESSURE_MODEL_ADVI_STEPS", str(DEFAULT_ADVI_STEPS))),
+              help=f"ADVI iterations (default: ${{PRESSURE_MODEL_ADVI_STEPS}} or {DEFAULT_ADVI_STEPS}).")
+def main(data_path: Path, output_path: Path, fast: bool, seed: int, advi_steps: int) -> None:
+    """Run offline Bayesian inference on the pressure model."""
+    if not data_path.exists():
+        click.echo(f"[FAIL] Data file not found: {data_path}", err=True)
         sys.exit(1)
 
-    print(f"Loading data from {args.data_path}…")
-    df = pd.read_csv(args.data_path)
-    print(f"[OK] Loaded {len(df)} rows, {df['icb'].nunique()} ICBs")
+    click.echo(f"Loading data from {data_path}…")
+    df = pd.read_csv(data_path)
+    click.echo(f"[OK] Loaded {len(df)} rows, {df['icb'].nunique()} ICBs")
 
-    print("Fitting Bayesian model…")
+    click.echo("Fitting Bayesian model…")
     _, idata, _ = fit_pressure_model(
         df,
-        fast=not args.full,
-        random_seed=args.seed,
-        advi_steps=args.advi_steps,
+        fast=fast,
+        random_seed=seed,
+        advi_steps=advi_steps,
     )
-    print(f"[OK] Posterior has {idata.posterior.dims['draw']} draws")
+    click.echo(f"[OK] Posterior has {idata.posterior.dims['draw']} draws")
 
-    print(f"Saving to {args.output_path}…")
-    save_posterior_summaries(idata, df, args.output_path)
-    print("[OK] Done!")
+    click.echo(f"Saving to {output_path}…")
+    save_posterior_summaries(idata, df, output_path)
+    click.echo("[OK] Done!")
 
 
 if __name__ == "__main__":

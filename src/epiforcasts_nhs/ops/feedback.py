@@ -19,10 +19,11 @@ Usage example:
 
 from __future__ import annotations
 
-import argparse
 import datetime as dt
 import subprocess
 from pathlib import Path
+
+import click
 
 
 LOG_PATH = Path("docs/90-changelog/logs/TRUST_ICB_UTILITY_FEEDBACK_LOG.md")
@@ -40,33 +41,52 @@ def _git_short_hash() -> str:
     return result.stdout.strip() or "unknown"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Record one Trust/ICB utility feedback session.")
-    parser.add_argument("--organisation-type", choices=["Trust", "ICB", "Joint"], required=True)
-    parser.add_argument("--organisation-name", required=True)
-    parser.add_argument("--session-type", choices=["huddle", "review", "workshop"], required=True)
-    parser.add_argument("--data-period", default="not specified")
-    parser.add_argument("--question", required=True)
-    parser.add_argument("--signal", required=True)
-    parser.add_argument("--action", required=True)
-    parser.add_argument("--usefulness", type=int, choices=range(1, 6), required=True)
-    parser.add_argument("--timeliness", type=int, choices=range(1, 6), required=True)
-    parser.add_argument("--clarity", type=int, choices=range(1, 6), required=True)
-    parser.add_argument("--confidence", type=int, choices=range(1, 6), required=True)
-    parser.add_argument("--interpretation-risks", required=True)
-    parser.add_argument("--change", required=True)
-    parser.add_argument("--owner", required=True)
-    parser.add_argument("--target-date", required=True)
-    parser.add_argument("--change-link", required=True)
-    args = parser.parse_args()
+_SCORE = click.IntRange(1, 5)
 
+
+@click.command(name="feedback")
+@click.option("--organisation-type", type=click.Choice(["Trust", "ICB", "Joint"]), required=True)
+@click.option("--organisation-name", required=True)
+@click.option("--session-type", type=click.Choice(["huddle", "review", "workshop"]), required=True)
+@click.option("--data-period", default="not specified", show_default=True)
+@click.option("--question", required=True)
+@click.option("--signal", required=True)
+@click.option("--action", required=True)
+@click.option("--usefulness", type=_SCORE, required=True)
+@click.option("--timeliness", type=_SCORE, required=True)
+@click.option("--clarity",    type=_SCORE, required=True)
+@click.option("--confidence", type=_SCORE, required=True)
+@click.option("--interpretation-risks", required=True)
+@click.option("--change", required=True)
+@click.option("--owner", required=True)
+@click.option("--target-date", required=True)
+@click.option("--change-link", required=True)
+def main(
+    organisation_type: str,
+    organisation_name: str,
+    session_type: str,
+    data_period: str,
+    question: str,
+    signal: str,
+    action: str,
+    usefulness: int,
+    timeliness: int,
+    clarity: int,
+    confidence: int,
+    interpretation_risks: str,
+    change: str,
+    owner: str,
+    target_date: str,
+    change_link: str,
+) -> None:
+    """Record one Trust/ICB utility feedback session."""
     if not LOG_PATH.exists():
         raise FileNotFoundError(f"Missing feedback log: {LOG_PATH}")
 
     now = dt.datetime.now(dt.timezone.utc)
     commit_hash = _git_short_hash()
 
-    entry = f"""\n\n## {now.date()} ({args.organisation_type} utility session)\n\n- Date/time (UTC): {now.isoformat().replace('+00:00', 'Z')}\n- Organisation type: {args.organisation_type}\n- Organisation name: {args.organisation_name}\n- Session type: {args.session_type}\n- Commit hash and app version: {commit_hash}\n- Data period reviewed: {args.data_period}\n\n### Decision-support questions\n\n- Which local operational question was being answered? {args.question}\n- Which signal/view was used? {args.signal}\n- What action was considered? {args.action}\n- Was uncertainty understood and usable? yes/no (capture in session notes)\n\n### Utility outcome\n\n- Usefulness score (1-5): {args.usefulness}\n- Timeliness score (1-5): {args.timeliness}\n- Clarity score (1-5): {args.clarity}\n- Confidence in interpretation (1-5): {args.confidence}\n- Any interpretation risks observed: {args.interpretation_risks}\n\n### Follow-up\n\n- What should change in UI/model/docs? {args.change}\n- Owner: {args.owner}\n- Target date: {args.target_date}\n- Link to resulting commit/changelog item: {args.change_link}\n"""
+    entry = f"""\n\n## {now.date()} ({organisation_type} utility session)\n\n- Date/time (UTC): {now.isoformat().replace('+00:00', 'Z')}\n- Organisation type: {organisation_type}\n- Organisation name: {organisation_name}\n- Session type: {session_type}\n- Commit hash and app version: {commit_hash}\n- Data period reviewed: {data_period}\n\n### Decision-support questions\n\n- Which local operational question was being answered? {question}\n- Which signal/view was used? {signal}\n- What action was considered? {action}\n- Was uncertainty understood and usable? yes/no (capture in session notes)\n\n### Utility outcome\n\n- Usefulness score (1-5): {usefulness}\n- Timeliness score (1-5): {timeliness}\n- Clarity score (1-5): {clarity}\n- Confidence in interpretation (1-5): {confidence}\n- Any interpretation risks observed: {interpretation_risks}\n\n### Follow-up\n\n- What should change in UI/model/docs? {change}\n- Owner: {owner}\n- Target date: {target_date}\n- Link to resulting commit/changelog item: {change_link}\n"""
 
     content = LOG_PATH.read_text(encoding="utf-8")
     if "No Trust/ICB utility feedback sessions logged yet." in content:
@@ -77,8 +97,7 @@ def main() -> int:
         f.write(entry)
 
     print(f"[OK] Feedback entry appended to {LOG_PATH}")
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

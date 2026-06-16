@@ -19,7 +19,7 @@ Define a minimal, measurable acceptance baseline to support a defensible 9.3 to 
 | Observability | Health and inference status fields are emitted and validated in checks. | `health_check.py` output, `acceptance_check.py` validations |
 | Maintainability | Core scripts compile and acceptance script compiles/runs in CI. | CI `py_compile` + acceptance step |
 | Governance/Traceability | Lifecycle git ledger and robustness plan documents exist and contain required sections. | `docs/90-changelog/logs/LIFECYCLE_GIT_CHANGELOG.md`, this file |
-| Developer Experience | Single commands exist for health and acceptance checks. | `pixi run health-check`, `pixi run acceptance-check` |
+| Developer Experience | Single commands exist for health and acceptance checks. | `uv run epiforcasts health`, `uv run epiforcasts acceptance` |
 | CI/Release Readiness | CI runs syntax compile, health check, inference smoke, and acceptance gate. | `.github/workflows/smoke-check.yml` |
 | Security Posture (scope) | Runtime artifacts are excluded by default in ignore policy. | `.gitignore` checks in `acceptance_check.py` |
 
@@ -35,8 +35,8 @@ Define a minimal, measurable acceptance baseline to support a defensible 9.3 to 
 
 ## Commands
 
-1. `pixi run health-check`
-2. `pixi run acceptance-check`
+1. `uv run epiforcasts health`
+2. `uv run epiforcasts acceptance`
 
 ## Last updated
 

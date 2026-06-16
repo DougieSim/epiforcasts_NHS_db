@@ -1,5 +1,5 @@
 """
-CLI-layer utilities — port selection and subprocess / Pixi helpers.
+CLI-layer utilities — port selection and subprocess helpers.
 
 These functions are inherently CLI-adjacent (they deal with OS processes,
 sockets, and shell invocation) and are not part of the library API. They
@@ -41,60 +41,34 @@ def pick_port(preferred: int, max_port: int) -> int:
 
 
 # ─────────────────────────────────────────
-# Pixi / subprocess helpers
+# Subprocess helpers
 # ─────────────────────────────────────────
 
-# Substrings in Pixi output that indicate a certificate / solver failure worth
-# retrying via the direct Python fallback path.
-_PIXI_FALLBACK_HINTS = ("unknownissuer", "certificate", "ssl", "solver")
-
-
-def pixi_task_for_app(app: str) -> str:
-    """Map 'fast' | 'full' to the corresponding Pixi task name."""
-    return "run-dashboard-fast" if app == "fast" else "run-dashboard"
-
-
-def should_fallback_from_output(output: str) -> bool:
-    """Return True if Pixi output contains a known cert / solver failure hint."""
-    text = output.lower()
-    return any(token in text for token in _PIXI_FALLBACK_HINTS)
-
-
-def run_pixi_task(task: str) -> subprocess.CompletedProcess[str]:
-    """Run a named Pixi task, capturing stdout/stderr."""
-    return subprocess.run(
-        ["pixi", "run", task],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-
-def fallback_python() -> str:
+def venv_python() -> str:
     """
-    Return the Python executable to use when Pixi is unavailable.
+    Return the Python executable to use for subprocess launches.
 
     Prefers the project .venv on Windows; falls back to the current interpreter.
     """
-    venv_python = Path(".venv") / "Scripts" / "python.exe"
-    return str(venv_python) if venv_python.exists() else sys.executable
+    venv = Path(".venv") / "Scripts" / "python.exe"
+    return str(venv) if venv.exists() else sys.executable
 
 
-def run_streamlit_fallback(
+def run_streamlit(
     app_path: str,
     *,
     preferred_port: int,
     max_port: int,
     headless: str,
 ) -> int:
-    """Launch Streamlit directly via cli.launch, bypassing Pixi."""
+    """Launch Streamlit directly via cli.launch in the project interpreter."""
     cmd = [
-        fallback_python(),
+        venv_python(),
         "-m", "epiforcasts_nhs.cli.launch",
         "--app", app_path,
         "--preferred-port", str(preferred_port),
         "--max-port", str(max_port),
         "--headless", headless,
     ]
-    print(f"[FALLBACK] {' '.join(cmd)}")
+    print(f"[LAUNCH] {' '.join(cmd)}")
     return subprocess.call(cmd)

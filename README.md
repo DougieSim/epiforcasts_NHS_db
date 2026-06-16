@@ -50,65 +50,61 @@ Out of scope:
 
 ## 3. Quick start
 
-Install and run a development flow:
+This project uses [uv](https://docs.astral.sh/uv/). Install the environment and
+run a development flow:
 
 ```bash
-pixi install
-pixi run dev
+uv sync
+uv run epiforcasts dev
 ```
 
 Run inference once and then launch the full dashboard:
 
 ```bash
-pixi run daemon-once
-pixi run run-dashboard
+uv run epiforcasts daemon --once
+uv run epiforcasts dashboard
 ```
 
-If port `8501` is already in use, dashboard startup now auto-falls back to the next free port (`8502`..`8510`) instead of failing.
+If port `8501` is already in use, dashboard startup auto-falls back to the next free port (`8502`..`8510`) instead of failing.
 
 Run a one-command local health check:
 
 ```bash
-pixi run health-check
+uv run epiforcasts health
 ```
+
+All commands are subcommands of the unified `epiforcasts` CLI — run
+`uv run epiforcasts --help` for the full list. Each also has a standalone
+`epiforcasts-*` console script (e.g. `uv run epiforcasts-inference --fast`).
 
 ## Environment reliability notes
 
-For consistent behavior, use one environment manager per session.
+`uv sync` creates a reproducible `.venv` from `uv.lock`. Prefix commands with
+`uv run` (or activate `.venv`) so they use that environment.
 
-1. Preferred: `pixi install` and `pixi run ...` tasks.
-2. Alternative: local `.venv` with explicit package parity checks.
-
-If you see PyTensor compiler warnings (`g++ not detected`), inference still runs but may be much slower.
+If you see PyTensor compiler warnings (`g++ not detected`), inference still runs
+but may be much slower. Unlike the old Pixi setup, uv does not bundle a C++
+compiler — install one at the system level (MSVC Build Tools on Windows,
+`build-essential` on Linux, Xcode CLT on macOS). See
+[docs/40-operations/PYTENSOR_COMPILER.md](docs/40-operations/PYTENSOR_COMPILER.md).
 
 Dashboard startup reliability:
 
-1. `pixi run run-dashboard` and `pixi run run-dashboard-fast` use a safe launcher with automatic port fallback.
+1. `uv run epiforcasts dashboard` (and `--fast`) use a safe launcher with automatic port fallback.
 2. If fallback occurs, the selected port is printed in terminal output.
-3. If `pixi run ...` fails with certificate/solver errors, use the resilient launcher first:
-
-```bash
-.venv\Scripts\python.exe run_dashboard_resilient.py --app app.py --fallback-on-any-failure
-```
-
-4. If you want direct control, run Streamlit via `.venv`:
-
-```bash
-.venv\Scripts\python.exe launch_streamlit.py --app app.py --preferred-port 8501 --max-port 8510
-```
 
 Evidence and confidence hardening automation:
 
 1. Run one independent evidence cycle and auto-append a timestamped entry:
 
 ```bash
-.venv\Scripts\python.exe log_evidence_run.py --run-inference-fast
+uv run epiforcasts evidence --run-inference-fast
 ```
 
 2. Record at least one Trust/ICB utility session with explicit change linkage:
 
 ```bash
-.venv\Scripts\python.exe record_trust_feedback.py --organisation-type Trust --organisation-name "Example NHS Trust" --session-type review --question "Operational question" --signal "Signal used" --action "Action considered" --usefulness 4 --timeliness 4 --clarity 4 --confidence 4 --interpretation-risks "None" --change "UI/model/docs change" --owner "Owner" --target-date "2026-06-15" --change-link "docs/90-changelog/logs/LIFECYCLE_GIT_CHANGELOG.md"
+uv run epiforcasts feedback --organisation-type Trust --organisation-name "Example NHS Trust" --session-type review --question "Operational question" --signal "Signal used" --action "Action considered" --usefulness 4 --timeliness 4 --clarity 4 --confidence 4 --interpretation-risks "None" --change "UI/model/docs change" --owner "Owner" --target-date "2026-06-15" --change-link "docs/90-changelog/logs/LIFECYCLE_GIT_CHANGELOG.md"
 ```
 
 ## Artifact policy
@@ -123,8 +119,8 @@ Generated inference artifacts are local runtime outputs and are not committed by
 Regenerate these via:
 
 ```bash
-pixi run daemon-once
-pixi run health-check
+uv run epiforcasts daemon --once
+uv run epiforcasts health
 ```
 
 If `posteriors.nc` is locked by a running dashboard, inference now retries and then writes a timestamped fallback artifact instead of crashing.

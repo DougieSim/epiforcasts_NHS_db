@@ -179,40 +179,7 @@ As new data arrive the system:
 The pressure index shown includes both the underlying AR(1) level and the current season's
 contribution. Direction of travel is computed on the seasonal-adjusted level only.
         """)
-
-    st.markdown("---")
-    st.markdown("### Evidence Distribution")
-    st.caption(
-        "Question answered: **How much posterior weight sits above routine vs elevated pressure?** "
-        "Dashed lines are **demo reference** cut-points — not national operational thresholds. "
-        f"Total pressure shown includes the **{season_now_str}** seasonal adjustment."
-    )
-
-    fig = fig_pressure_question(
-        samples, credible_mass=credible_mass, show_median_line=show_median_line,
-    )
-    st.pyplot(fig, clear_figure=True)
-    plt.close(fig)
-    st.caption(area_caption)
-
-    st.markdown("---")
-    st.markdown("### Pressure Trajectory")
-    st.caption(
-        "Kalman-filtered estimate of underlying pressure over time — **seasonal component removed**. "
-        "The shaded band is the 90% filtered CI, which is wide early "
-        "(little evidence) and narrows as data accumulates."
-    )
-
-    # traj_icbs is always an explicit list — no conditional needed here.
-    for traj_icb in traj_icbs:
-        icb_rows = full_panel_df[full_panel_df["icb"] == traj_icb]
-        traj_fig = fig_pressure_trajectory(idata, icb_rows, traj_icb)
-        if traj_fig is not None:
-            st.pyplot(traj_fig, clear_figure=True)
-            plt.close(traj_fig)
-        else:
-            st.warning(f"Trajectory unavailable for {traj_icb}.")
-
+    
     st.markdown("---")
     st.markdown("### Clinical Summary")
 
@@ -242,6 +209,25 @@ contribution. Direction of travel is computed on the seasonal-adjusted level onl
         "**Uncertainty:** Spreads reflect sparse weeks, seasonal estimation uncertainty, "
         "model simplifications, and reporting noise. Use alongside operational intelligence."
     )
+
+
+    st.markdown("---")
+    st.markdown("### Pressure Trajectory")
+    st.caption(
+        "Estimate of underlying pressure over time "
+    )
+
+    # traj_icbs is always an explicit list — no conditional needed here.
+    for traj_icb in traj_icbs:
+        icb_rows = full_panel_df[full_panel_df["icb"] == traj_icb]
+        traj_fig = fig_pressure_trajectory(idata, icb_rows, traj_icb)
+        if traj_fig is not None:
+            st.pyplot(traj_fig, clear_figure=True)
+            plt.close(traj_fig)
+        else:
+            st.warning(f"Trajectory unavailable for {traj_icb}.")
+
+    
 
 
 # ─────────────────────────────────────────
@@ -384,15 +370,7 @@ with _main_area.container():
         )
 
         # Seasonal pattern is a national (shared) component — England view only.
-        st.markdown("---")
-        st.markdown("### Seasonal Pattern")
-        st.caption(
-            "Posterior estimates of how each season shifts bed occupancy relative to the "
-            "annual mean. Shared across all ICBs — applies equally regardless of geography."
-        )
-        season_fig = fig_seasonal_effects(idata)
-        st.pyplot(season_fig, clear_figure=True)
-        plt.close(season_fig)
+
 
     else:
         try:

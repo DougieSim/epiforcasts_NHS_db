@@ -22,16 +22,16 @@ Usage (library):
 
 from __future__ import annotations
 
-import argparse
 import logging
 import sys
 from pathlib import Path
 
+import click
 import numpy as np
 import pandas as pd
 
 import epiforcasts_nhs.data.constants as constants
-from epiforcasts_nhs.config import WEEKLY_CSV_ARCHIVE
+from epiforcasts_nhs.config import WEEKLY_CSV, WEEKLY_CSV_ARCHIVE
 from epiforcasts_nhs.data.generator import build_weekly_icb_frame
 from epiforcasts_nhs.data.utils import england_aggregate
 
@@ -169,29 +169,27 @@ class SyntheticGenerator:
 # Entry point
 # ─────────────────────────────────────────
 
-def main() -> int:
+@click.command(name="generate")
+@click.option("--data", "data_path", type=click.Path(path_type=Path), default=WEEKLY_CSV,
+              show_default=True, help="Rolling-window panel CSV to extend.")
+@click.option("--weeks", type=int, default=1, show_default=True, help="Number of new weeks to generate.")
+def main(data_path: Path, weeks: int) -> None:
+    """Append new synthetic week(s) to the rolling panel CSV."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 
-    parser = argparse.ArgumentParser(description="Append new synthetic week(s) to the panel CSV.")
-    parser.add_argument("--data",  type=str, default="synthetic_nhs_pressure.csv")
-    parser.add_argument("--weeks", type=int, default=1, help="Number of new weeks to generate.")
-    args = parser.parse_args()
+    if not data_path.exists():
+        print(f"[FAIL] Data file not found: {data_path}", file=sys.stderr)
+        print("Run epiforcasts-create-initial-data first to create the initial dataset.", file=sys.stderr)
+        raise SystemExit(1)
 
-    if not Path(args.data).exists():
-        print(f"[FAIL] Data file not found: {args.data}", file=sys.stderr)
-        print("Run epiforcasts-seed first to create the initial dataset.", file=sys.stderr)
-        return 1
+    gen = SyntheticGenerator(data_path)
+    df  = pd.read_csv(data_path)
 
-    gen = SyntheticGenerator(args.data)
-    df  = pd.read_csv(args.data)
-
-    for i in range(args.weeks):
+    for i in range(weeks):
         new_week_df = gen.generate_next_week(df)
         df = gen.append_and_save(new_week_df, df=df)
-        print(f"[OK] Generated week {int(df['week'].max())} ({i + 1}/{args.weeks})")
-
-    return 0
+        print(f"[OK] Generated week {int(df['week'].max())} ({i + 1}/{weeks})")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

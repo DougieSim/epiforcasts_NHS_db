@@ -9,10 +9,11 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
 from pathlib import Path
+
+import click
 
 from epiforcasts_nhs.config import STREAMLIT_MAX_PORT, STREAMLIT_PREFERRED_PORT
 from epiforcasts_nhs.cli.utils import pick_port
@@ -22,30 +23,30 @@ APP_FULL = str(_PACKAGE_ROOT / "dashboard" / "app.py")
 APP_FAST = str(_PACKAGE_ROOT / "dashboard" / "app_fast.py")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Launch Streamlit with safe port fallback.")
-    parser.add_argument("--app",            default=APP_FULL)
-    parser.add_argument("--preferred-port", type=int, default=STREAMLIT_PREFERRED_PORT)
-    parser.add_argument("--max-port",       type=int, default=STREAMLIT_MAX_PORT)
-    parser.add_argument("--headless",       choices=["true", "false"], default="true")
-    args = parser.parse_args()
-
+@click.command(name="launch")
+@click.option("--app", default=APP_FULL, show_default=False,
+              help="Streamlit app path (defaults to the full dashboard).")
+@click.option("--preferred-port", type=int, default=STREAMLIT_PREFERRED_PORT, show_default=True)
+@click.option("--max-port",       type=int, default=STREAMLIT_MAX_PORT, show_default=True)
+@click.option("--headless", type=click.Choice(["true", "false"]), default="true", show_default=True)
+def main(app: str, preferred_port: int, max_port: int, headless: str) -> None:
+    """Launch Streamlit with automatic port fallback."""
     try:
-        port = pick_port(args.preferred_port, args.max_port)
+        port = pick_port(preferred_port, max_port)
     except RuntimeError as exc:
-        print(f"[FAIL] {exc}", file=sys.stderr)
-        return 1
+        click.echo(f"[FAIL] {exc}", err=True)
+        raise SystemExit(1)
 
-    if port != args.preferred_port:
-        print(f"[WARN] Port {args.preferred_port} busy — using {port}.")
+    if port != preferred_port:
+        click.echo(f"[WARN] Port {preferred_port} busy — using {port}.")
     else:
-        print(f"[OK] Using port {port}.")
+        click.echo(f"[OK] Using port {port}.")
 
-    cmd = [sys.executable, "-m", "streamlit", "run", args.app,
-           "--server.port", str(port), "--server.headless", args.headless]
-    print(f"[OK] Starting: {' '.join(cmd)}")
-    return subprocess.call(cmd)
+    cmd = [sys.executable, "-m", "streamlit", "run", app,
+           "--server.port", str(port), "--server.headless", headless]
+    click.echo(f"[OK] Starting: {' '.join(cmd)}")
+    raise SystemExit(subprocess.call(cmd))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

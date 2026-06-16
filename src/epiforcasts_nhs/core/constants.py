@@ -132,7 +132,7 @@ MODEL_SAMPLING = ModelSamplingConfig(
 )
 
 MODEL_PRIORS = ModelPriors(
-    mu_national_sd=1.0,
+    mu_national_sd=3.0,
     sigma_icb_rate=1.0,
     rho_alpha=2.0, rho_beta=2.0,
     sigma_drift_lam=1.0,

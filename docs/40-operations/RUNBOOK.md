@@ -24,33 +24,32 @@ Out of scope:
 
 ## Core commands
 
+The project uses [uv](https://docs.astral.sh/uv/). Every task is a subcommand of
+the unified `epiforcasts` CLI (`uv run epiforcasts --help`).
+
 ```bash
-pixi install
-pixi run dev
-pixi run daemon-once
-pixi run daemon
-pixi run run-dashboard
-pixi run run-dashboard-fast
-pixi run run-dashboard-resilient
-pixi run run-dashboard-fast-resilient
-pixi run evidence-cycle
-pixi run cache-status
-pixi run cache-check
+uv sync
+uv run epiforcasts dev
+uv run epiforcasts daemon --once
+uv run epiforcasts daemon
+uv run epiforcasts dashboard
+uv run epiforcasts dashboard --fast
+uv run epiforcasts evidence --run-inference-fast
+uv run epiforcasts cache status
+uv run epiforcasts cache check
+uv run epiforcasts full-pipeline
 ```
 
 Dashboard startup protection:
 
-1. Dashboard tasks use `launch_streamlit.py` for automatic port fallback.
+1. `uv run epiforcasts dashboard` (and `--fast`) launch with automatic port fallback.
 2. If `8501` is occupied, startup falls through `8502` to `8510` and continues.
-3. If `pixi run` fails due certificate/solver issues, use `run_dashboard_resilient.py` from `.venv` to auto-fallback:
-`python run_dashboard_resilient.py --app app.py --fallback-on-any-failure`.
-4. If needed, launch directly from `.venv`:
-`python launch_streamlit.py --app app.py --preferred-port 8501 --max-port 8510`.
+3. The selected port is printed in terminal output.
 
 Evidence confidence loop:
 
-1. Run `python log_evidence_run.py --run-inference-fast` daily or per release candidate.
-2. Capture at least one Trust/ICB utility session using `record_trust_feedback.py`.
+1. Run `uv run epiforcasts evidence --run-inference-fast` daily or per release candidate.
+2. Capture at least one Trust/ICB utility session using `uv run epiforcasts feedback ...`.
 3. Link resulting change actions in changelog and decision logs before claiming strict 9.5 confidence.
 
 Need a minimal first-run path?
@@ -81,13 +80,13 @@ Need a minimal first-run path?
 ## Troubleshooting
 
 1. Cache not ready:
-Run `pixi run daemon-once` then `pixi run cache-status`.
+Run `uv run epiforcasts daemon --once` then `uv run epiforcasts cache status`.
 2. Slow inference:
 Check compiler setup and use fast mode during iteration.
 3. Confusing output language:
 Verify terms against glossary and update explanatory copy.
 4. Streamlit port already in use:
-Use `pixi run run-dashboard` (safe launcher). It auto-selects the next free port and prints it.
+Use `uv run epiforcasts dashboard` (safe launcher). It auto-selects the next free port and prints it.
 5. Inference save fails with file lock on `posteriors.nc`:
 The script now retries and then saves to a timestamped `posteriors_YYYYMMDD_HHMMSS.nc` fallback instead of exiting.
 

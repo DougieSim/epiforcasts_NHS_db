@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 
+import click
 import pandas as pd
 
 from epiforcasts_nhs.config import COVARIATE_CHECK_HOLDOUT_WEEKS, COVARIATE_CHECK_LAGS, WEEKLY_CSV
@@ -25,10 +26,12 @@ COLS = [
 ]
 
 
-def main() -> int:
+@click.command(name="covariate")
+def main() -> None:
+    """Covariate alignment checks — within-ICB correlations with bed occupancy."""
     if not WEEKLY_CSV.exists():
         print(f"[FAIL] Missing data file: {WEEKLY_CSV}", file=sys.stderr)
-        return 1
+        raise SystemExit(1)
 
     df = pd.read_csv(WEEKLY_CSV)
     df = df[df["icb"] != "England"].copy()
@@ -62,8 +65,6 @@ def main() -> int:
         print(f"\n  lag={lag} weeks:")
         print(corrs.sort_values(ascending=False).round(3).to_string())
 
-    return 0
-
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

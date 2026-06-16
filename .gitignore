@@ -1,6 +1,5 @@
-# pixi environments
-.pixi/*
-!.pixi/config.toml
+# uv / virtual environment
+.venv/
 
 # Generated inference and cache artifacts
 .cache/

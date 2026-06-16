@@ -11,7 +11,7 @@ What went wrong?
 ## Environment
 
 1. OS:
-2. Python environment or pixi details:
+2. uv version / environment details (`uv --version`):
 3. Command used:
 
 ## Steps to reproduce

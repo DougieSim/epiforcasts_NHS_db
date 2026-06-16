@@ -17,12 +17,19 @@ dependencies = [
     "streamlit",
     "xarray",
     "h5netcdf",
+    "h5py",
     "scikit-learn",
     "pytensor",
+    "click",
 ]
 
 [project.scripts]
+# Unified click CLI — `epiforcasts <command>` (see cli/app.py).
+epiforcasts            = "epiforcasts_nhs.cli.app:cli"
+# Individual entry points — kept for backward compatibility; each is the same
+# click command the unified group registers as a subcommand.
 epiforcasts-create-initial-data = "epiforcasts_nhs.data.generator:main"
+epiforcasts-generate   = "epiforcasts_nhs.data.generate:main"
 epiforcasts-inference  = "epiforcasts_nhs.cli.inference:main"
 epiforcasts-daemon     = "epiforcasts_nhs.cli.daemon:main"
 epiforcasts-cache      = "epiforcasts_nhs.core.cache:main"
@@ -32,8 +39,13 @@ epiforcasts-evidence   = "epiforcasts_nhs.ops.evidence:main"
 epiforcasts-feedback   = "epiforcasts_nhs.ops.feedback:main"
 epiforcasts-covariate  = "epiforcasts_nhs.ops.covariate:main"
 epiforcasts-launch     = "epiforcasts_nhs.cli.launch:main"
-epiforcasts-resilient  = "epiforcasts_nhs.cli.run_resilient:main"
+epiforcasts-dashboard  = "epiforcasts_nhs.cli.run_resilient:main"
 
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/epiforcasts_nhs"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]

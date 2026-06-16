@@ -6,13 +6,15 @@ First-time users who want the easiest possible setup.
 ## Goal
 Get from zero to a running dashboard with the fewest decisions.
 
+This project uses [uv](https://docs.astral.sh/uv/). Install it first, then:
+
 ## Option 1: Easiest one-liner
 
 Run this:
 
 ```bash
-pixi install
-pixi run dev
+uv sync
+uv run epiforcasts dev
 ```
 
 What it does:
@@ -31,10 +33,10 @@ Use this when:
 Run these commands one by one:
 
 ```bash
-pixi install
-pixi run generate-data
-pixi run daemon-once
-pixi run run-dashboard
+uv sync
+uv run epiforcasts generate
+uv run epiforcasts daemon --once
+uv run epiforcasts dashboard
 ```
 
 What this gives you:
@@ -49,13 +51,13 @@ Run in two terminals:
 Terminal A:
 
 ```bash
-pixi run daemon
+uv run epiforcasts daemon
 ```
 
 Terminal B:
 
 ```bash
-pixi run run-dashboard-fast
+uv run epiforcasts dashboard --fast
 ```
 
 Use this when:
@@ -68,16 +70,16 @@ Use this when:
 If something looks wrong, run:
 
 ```bash
-pixi run cache-status
-pixi run cache-check
+uv run epiforcasts cache status
+uv run epiforcasts cache check
 ```
 
 ## Most common first-run problems
 
 1. Missing dependencies:
-Run pixi install again.
+Run uv sync again.
 2. Cache not ready:
-Run pixi run daemon-once.
+Run uv run epiforcasts daemon --once.
 3. Slow first inference:
 This is expected; later runs are faster with cache.
 
